@@ -72,7 +72,7 @@ class AgentRuntime:
         return RuntimeResult(
             state=self.state_machine.state,
             output_text=self._extract_output_text(session["messages"]),
-            messages=self._result_messages(session["messages"]),
+            messages=session["messages"],
         )
 
     def _load_or_create_session(self, session_id: str, task_goal: str) -> dict[str, Any]:
@@ -161,16 +161,3 @@ class AgentRuntime:
             if isinstance(content, str):
                 return content
         return ""
-
-    @staticmethod
-    def _result_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        for index in range(len(messages) - 1, -1, -1):
-            message = messages[index]
-            if message.get("role") != "user":
-                continue
-            content = message.get("content")
-            if isinstance(content, list) and any(
-                isinstance(block, dict) and block.get("type") == "tool_result" for block in content
-            ):
-                return messages[: index + 1]
-        return messages

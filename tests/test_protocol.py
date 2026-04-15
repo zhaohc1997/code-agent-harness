@@ -124,5 +124,22 @@ def test_protocol_requires_tool_results_adjacent(runtime_dependencies) -> None:
 
     result = runtime.run(session_id="s1", user_input="Read a file")
 
-    assert result.messages[-2]["role"] == "assistant"
-    assert result.messages[-1]["role"] == "user"
+    assert result.messages[-1]["role"] == "assistant"
+    assert result.messages[-1]["content"] == [{"type": "text", "text": "finished"}]
+
+    adjacent_tool_exchange_found = False
+    for assistant_message, user_message in zip(result.messages, result.messages[1:]):
+        assistant_content = assistant_message.get("content")
+        user_content = user_message.get("content")
+        if (
+            assistant_message.get("role") == "assistant"
+            and isinstance(assistant_content, list)
+            and any(isinstance(block, dict) and block.get("type") == "tool_call" for block in assistant_content)
+            and user_message.get("role") == "user"
+            and isinstance(user_content, list)
+            and any(isinstance(block, dict) and block.get("type") == "tool_result" for block in user_content)
+        ):
+            adjacent_tool_exchange_found = True
+            break
+
+    assert adjacent_tool_exchange_found is True
