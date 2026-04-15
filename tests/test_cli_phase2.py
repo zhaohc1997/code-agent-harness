@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
-from code_agent_harness.cli import build_parser
+from code_agent_harness.cli import build_parser, main
 from code_agent_harness.config import RuntimeConfig
+from code_agent_harness.types.engine import RuntimeResult
+from code_agent_harness.types.state import SessionState
 
 
 def test_runtime_config_reads_deepseek_env(monkeypatch, tmp_path) -> None:
@@ -43,3 +46,52 @@ def test_cli_parser_accepts_phase2_profile_and_eval_command() -> None:
     assert eval_args.task == "Fix a bug"
     assert eval_args.ablate == ["tool_calls", "memory"]
     assert eval_args.live is True
+
+
+def test_run_command_passes_selected_profile_to_runtime_factory() -> None:
+    received_profiles: list[str] = []
+
+    class FakeRuntime:
+        def run(self, session_id: str, user_input: str) -> RuntimeResult:
+            assert session_id == "s1"
+            assert user_input == "hello"
+            return RuntimeResult(
+                state=SessionState.COMPLETED,
+                output_text="done",
+                messages=[{"role": "assistant", "content": [{"type": "text", "text": "done"}]}],
+            )
+
+    def runtime_factory(profile: str) -> FakeRuntime:
+        received_profiles.append(profile)
+        return FakeRuntime()
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["run", "--session", "s1", "--input", "hello", "--profile", "reviewer"],
+        runtime_factory=runtime_factory,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    assert received_profiles == ["reviewer"]
+    assert stderr.getvalue() == ""
+    assert "state=completed" in stdout.getvalue()
+    assert "done" in stdout.getvalue()
+
+
+def test_eval_command_returns_nonzero_until_wired() -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["eval", "--profile", "code_assistant", "--task", "Fix a bug", "--ablate", "memory", "--live"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code != 0
+    assert stdout.getvalue() == ""
+    assert "not wired yet" in stderr.getvalue()

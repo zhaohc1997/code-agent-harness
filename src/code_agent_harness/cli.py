@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -48,8 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_default_runtime() -> AgentRuntime:
-    config = RuntimeConfig.from_env(Path.cwd() / ".agenth", Path.cwd(), "code_assistant")
+def build_default_runtime(profile: str = "code_assistant") -> AgentRuntime:
+    config = RuntimeConfig.from_env(Path.cwd() / ".agenth", Path.cwd(), profile)
     paths = config.paths
     registry = ToolRegistry(load_builtin_tools)
     return AgentRuntime(
@@ -68,14 +69,43 @@ def build_default_runtime() -> AgentRuntime:
     )
 
 
+def _build_runtime_with_profile(
+    runtime_factory: Callable[..., RuntimeRunner],
+    profile: str,
+) -> RuntimeRunner:
+    try:
+        signature = inspect.signature(runtime_factory)
+    except (TypeError, ValueError):
+        return runtime_factory()
+
+    parameters = tuple(signature.parameters.values())
+    if not parameters:
+        return runtime_factory()
+    if "profile" in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    ):
+        return runtime_factory(profile=profile)
+    first_parameter = parameters[0]
+    if first_parameter.kind in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.VAR_POSITIONAL,
+    ):
+        return runtime_factory(profile)
+    return runtime_factory()
+
+
 def _run_command(
     args: argparse.Namespace,
-    runtime_factory: Callable[[], RuntimeRunner],
+    runtime_factory: Callable[..., RuntimeRunner],
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
     try:
-        result = runtime_factory().run(session_id=args.session, user_input=args.input)
+        result = _build_runtime_with_profile(runtime_factory, args.profile).run(
+            session_id=args.session,
+            user_input=args.input,
+        )
     except Exception as exc:
         stderr.write(f"error: {exc}\n")
         return 1
@@ -96,17 +126,16 @@ def _cancel_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) ->
 
 
 def _eval_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
-    del stderr
-    stdout.write(
-        f"eval profile={args.profile} task={args.task} live={args.live} ablate={','.join(args.ablate)}\n"
-    )
-    return 0
+    del stdout
+    del args
+    stderr.write("error: eval is not wired yet in Task 1 scaffolding\n")
+    return 1
 
 
 def main(
     argv: list[str] | None = None,
     *,
-    runtime_factory: Callable[[], RuntimeRunner] = build_default_runtime,
+    runtime_factory: Callable[..., RuntimeRunner] = build_default_runtime,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
