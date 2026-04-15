@@ -2,18 +2,33 @@ import json
 from pathlib import Path
 
 
+def _require_leaf_name(value: str, label: str) -> str:
+    candidate = Path(value)
+    if candidate.name != value or candidate.is_absolute() or candidate.parent != Path("."):
+        raise ValueError(f"{label} must be a simple leaf name, got {value!r}")
+    return value
+
+
+def _dump_json(payload: dict[str, object]) -> str:
+    try:
+        return json.dumps(payload, indent=2, sort_keys=True)
+    except TypeError as exc:
+        raise ValueError("payload must be JSON serializable") from exc
+
+
 class CheckpointStore:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
-        self.checkpoints_dir = self.root / "checkpoints"
-        self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(parents=True, exist_ok=True)
 
     def save(self, session_id: str, turn_count: int, payload: dict[str, object]) -> None:
-        session_dir = self.checkpoints_dir / session_id
+        session_id = _require_leaf_name(session_id, "session_id")
+        session_dir = self.root / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
         path = session_dir / f"turn-{turn_count}.json"
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        path.write_text(_dump_json(payload), encoding="utf-8")
 
     def load(self, session_id: str, turn_count: int) -> dict[str, object]:
-        path = self.checkpoints_dir / session_id / f"turn-{turn_count}.json"
+        session_id = _require_leaf_name(session_id, "session_id")
+        path = self.root / session_id / f"turn-{turn_count}.json"
         return json.loads(path.read_text(encoding="utf-8"))
