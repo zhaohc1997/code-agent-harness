@@ -1,46 +1,21 @@
 import pytest
 
 from code_agent_harness import __version__
+from code_agent_harness.cli import build_parser
 import code_agent_harness.llm as llm
-from code_agent_harness.config import RuntimePaths
-from code_agent_harness.engine.cancellation import CancellationToken
-from code_agent_harness.engine.state_machine import EngineStateMachine
-from code_agent_harness.storage.checkpoints import CheckpointStore
-from code_agent_harness.storage.sessions import SessionStore
-from code_agent_harness.tools.executor import ToolExecutor
-from code_agent_harness.tools.registry import RegisteredTool, ToolRegistry
 from code_agent_harness.types.state import SessionState
 from code_agent_harness.types.tools import ToolDefinition
 
 
-def _build_runtime_dependencies(tmp_path, *, registry: ToolRegistry | None = None):
-    paths = RuntimePaths(tmp_path / ".agenth")
-    active_registry = registry or ToolRegistry(
-        lambda: [
-            RegisteredTool(
-                definition=ToolDefinition(name="read_file"),
-                handler=lambda arguments: f"read:{arguments['path']}",
-            )
-        ]
-    )
-    return {
-        "system_prompt": "You are a test agent.",
-        "sessions": SessionStore(paths.sessions),
-        "checkpoints": CheckpointStore(paths.checkpoints),
-        "registry": active_registry,
-        "executor": ToolExecutor(registry=active_registry, blob_store_root=tmp_path / ".agenth"),
-        "cancellation": CancellationToken(),
-        "state_machine": EngineStateMachine(SessionState.IDLE),
-    }
-
-
-@pytest.fixture
-def runtime_dependencies(tmp_path):
-    return _build_runtime_dependencies(tmp_path)
-
-
 def test_package_exposes_version() -> None:
     assert __version__ == "0.1.0"
+
+
+def test_cli_parser_accepts_run_command() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["run", "--session", "s1", "--input", "hello"])
+    assert args.command == "run"
+    assert args.session == "s1"
 
 
 def test_llm_package_exports_are_usable() -> None:
@@ -95,6 +70,7 @@ def test_engine_completes_without_tool_calls(runtime_dependencies) -> None:
 
 def test_engine_fails_fast_on_repeated_tool_use_loop(tmp_path) -> None:
     from code_agent_harness.engine.loop import AgentRuntime
+    from conftest import _build_runtime_dependencies
 
     runtime_dependencies = _build_runtime_dependencies(tmp_path)
     provider = llm.FakeProvider(
@@ -145,6 +121,7 @@ def test_engine_fails_fast_on_repeated_tool_use_loop(tmp_path) -> None:
 
 def test_engine_persists_failed_state_when_provider_raises(tmp_path) -> None:
     from code_agent_harness.engine.loop import AgentRuntime
+    from conftest import _build_runtime_dependencies
 
     class ExplodingProvider:
         def generate(self, request):
@@ -163,6 +140,8 @@ def test_engine_persists_failed_state_when_provider_raises(tmp_path) -> None:
 
 def test_engine_persists_failed_state_when_tool_execution_raises(tmp_path) -> None:
     from code_agent_harness.engine.loop import AgentRuntime
+    from conftest import _build_runtime_dependencies
+    from code_agent_harness.tools.registry import RegisteredTool, ToolRegistry
 
     registry = ToolRegistry(
         lambda: [
