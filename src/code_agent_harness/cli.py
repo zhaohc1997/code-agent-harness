@@ -34,15 +34,22 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--session", required=True)
     run_parser.add_argument("--input", required=True)
+    run_parser.add_argument("--profile", default="code_assistant")
 
     cancel_parser = subparsers.add_parser("cancel")
     cancel_parser.add_argument("--session", required=True)
+
+    eval_parser = subparsers.add_parser("eval")
+    eval_parser.add_argument("--profile", default="code_assistant")
+    eval_parser.add_argument("--task", required=True)
+    eval_parser.add_argument("--ablate", action="append", default=[])
+    eval_parser.add_argument("--live", action="store_true")
 
     return parser
 
 
 def build_default_runtime() -> AgentRuntime:
-    config = RuntimeConfig(root=Path.cwd() / ".agenth")
+    config = RuntimeConfig.from_env(Path.cwd() / ".agenth", Path.cwd(), "code_assistant")
     paths = config.paths
     registry = ToolRegistry(load_builtin_tools)
     return AgentRuntime(
@@ -88,6 +95,14 @@ def _cancel_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) ->
     return 0
 
 
+def _eval_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
+    del stderr
+    stdout.write(
+        f"eval profile={args.profile} task={args.task} live={args.live} ablate={','.join(args.ablate)}\n"
+    )
+    return 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -101,6 +116,8 @@ def main(
     stderr = stderr or sys.stderr
     if args.command == "run":
         return _run_command(args, runtime_factory, stdout, stderr)
+    if args.command == "eval":
+        return _eval_command(args, stdout, stderr)
     return _cancel_command(args, stdout, stderr)
 
 
