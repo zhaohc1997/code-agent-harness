@@ -4,6 +4,14 @@ from code_agent_harness.types.state import SessionState
 
 
 @dataclass(frozen=True)
+class LLMRequest:
+    system_prompt: str
+    messages: list[object]
+    tools: list[object]
+    extra: dict[str, object]
+
+
+@dataclass(frozen=True)
 class LLMResponse:
     content: list[object]
     stop_reason: str

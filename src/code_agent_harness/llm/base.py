@@ -1,20 +1,9 @@
-from dataclasses import dataclass
 from typing import Protocol
 
-
-@dataclass(frozen=True)
-class LLMResponse:
-    content: list[object]
-    stop_reason: str
-    usage: dict[str, int] | None = None
+from code_agent_harness.types.engine import LLMRequest
+from code_agent_harness.types.engine import LLMResponse
 
 
 class LLMProvider(Protocol):
-    def generate(
-        self,
-        system_prompt: str,
-        messages: list[object],
-        tools: list[object],
-        extra: dict[str, object],
-    ) -> LLMResponse:
+    def generate(self, request: LLMRequest) -> LLMResponse:
         ...
