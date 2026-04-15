@@ -127,19 +127,51 @@ def test_protocol_requires_tool_results_adjacent(runtime_dependencies) -> None:
     assert result.messages[-1]["role"] == "assistant"
     assert result.messages[-1]["content"] == [{"type": "text", "text": "finished"}]
 
-    adjacent_tool_exchange_found = False
-    for assistant_message, user_message in zip(result.messages, result.messages[1:]):
-        assistant_content = assistant_message.get("content")
-        user_content = user_message.get("content")
-        if (
-            assistant_message.get("role") == "assistant"
-            and isinstance(assistant_content, list)
-            and any(isinstance(block, dict) and block.get("type") == "tool_call" for block in assistant_content)
-            and user_message.get("role") == "user"
-            and isinstance(user_content, list)
-            and any(isinstance(block, dict) and block.get("type") == "tool_result" for block in user_content)
-        ):
-            adjacent_tool_exchange_found = True
-            break
+    matching_pairs = [
+        (assistant_message, user_message)
+        for assistant_message, user_message in zip(result.messages, result.messages[1:])
+        if assistant_message.get("role") == "assistant" and user_message.get("role") == "user"
+    ]
+    tool_exchange_pairs = [
+        (assistant_message, user_message)
+        for assistant_message, user_message in matching_pairs
+        if assistant_message.get("content") == [
+            {
+                "type": "tool_call",
+                "id": "tool-1",
+                "name": "read_file",
+                "arguments": {"path": "a.py"},
+            }
+        ]
+        and user_message.get("content") == [
+            {
+                "type": "tool_result",
+                "tool_use_id": "tool-1",
+                "tool_name": "read_file",
+                "content": "read:a.py",
+            }
+        ]
+    ]
 
-    assert adjacent_tool_exchange_found is True
+    assert len(tool_exchange_pairs) == 1
+
+
+def test_protocol_rejects_tool_use_without_tool_calls(runtime_dependencies) -> None:
+    from code_agent_harness.engine.loop import AgentRuntime
+
+    provider = FakeProvider(
+        script=[
+            {
+                "stop_reason": "tool_use",
+                "content": [{"type": "text", "text": "not actually a tool call"}],
+            }
+        ]
+    )
+    runtime = AgentRuntime(provider=provider, **runtime_dependencies)
+
+    with pytest.raises(ValueError, match="tool_use response must include at least one tool_call"):
+        runtime.run(session_id="s1", user_input="Read a file")
+
+    session = runtime_dependencies["sessions"].load("s1")
+    assert session["state"] == SessionState.FAILED.value
+    assert session["messages"][-1]["role"] == "assistant"
