@@ -33,3 +33,24 @@ class Observability:
 
     def emit(self, event: DecisionPointEvent) -> None:
         self.logger.append(event.as_dict())
+
+    def emit_decision_point(
+        self,
+        *,
+        event_name: str,
+        session_id: str,
+        turn_id: int,
+        component: str,
+        status: str,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> None:
+        self.emit(
+            DecisionPointEvent(
+                event_name=event_name,
+                session_id=session_id,
+                turn_id=turn_id,
+                component=component,
+                status=status,
+                metadata=metadata or {},
+            )
+        )

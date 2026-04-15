@@ -1,9 +1,38 @@
 import pytest
 
 from code_agent_harness.storage.blobs import BlobStore
+from code_agent_harness.config import RuntimePaths
+from code_agent_harness.engine.cancellation import CancellationToken
+from code_agent_harness.engine.state_machine import EngineStateMachine
+from code_agent_harness.storage.checkpoints import CheckpointStore
+from code_agent_harness.storage.sessions import SessionStore
 from code_agent_harness.tools.executor import ToolExecutor
 from code_agent_harness.tools.registry import RegisteredTool, ToolRegistry, UnknownToolError
+from code_agent_harness.types.state import SessionState
 from code_agent_harness.types.tools import ToolDefinition
+from code_agent_harness.llm.fake_provider import FakeProvider
+
+
+@pytest.fixture
+def runtime_dependencies(tmp_path):
+    paths = RuntimePaths(tmp_path / ".agenth")
+    registry = ToolRegistry(
+        lambda: [
+            RegisteredTool(
+                definition=ToolDefinition(name="read_file"),
+                handler=lambda arguments: f"read:{arguments['path']}",
+            )
+        ]
+    )
+    return {
+        "system_prompt": "You are a test agent.",
+        "sessions": SessionStore(paths.sessions),
+        "checkpoints": CheckpointStore(paths.checkpoints),
+        "registry": registry,
+        "executor": ToolExecutor(registry=registry, blob_store_root=tmp_path / ".agenth"),
+        "cancellation": CancellationToken(),
+        "state_machine": EngineStateMachine(SessionState.IDLE),
+    }
 
 
 def test_tool_registry_is_dynamic_per_call() -> None:
@@ -67,3 +96,33 @@ def test_execute_unknown_tool_fails_clearly(tmp_path) -> None:
 
     with pytest.raises(UnknownToolError, match="unknown tool: missing_tool"):
         executor.execute("missing_tool", {})
+
+
+def test_protocol_requires_tool_results_adjacent(runtime_dependencies) -> None:
+    from code_agent_harness.engine.loop import AgentRuntime
+
+    provider = FakeProvider(
+        script=[
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": {"path": "a.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "finished"}],
+            },
+        ]
+    )
+    runtime = AgentRuntime(provider=provider, **runtime_dependencies)
+
+    result = runtime.run(session_id="s1", user_input="Read a file")
+
+    assert result.messages[-2]["role"] == "assistant"
+    assert result.messages[-1]["role"] == "user"
