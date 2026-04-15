@@ -4,6 +4,8 @@ import json
 
 
 class CycleGuard:
+    """Track only consecutive duplicate tool calls."""
+
     def __init__(self, max_repeats: int = 2) -> None:
         self.max_repeats = max_repeats
         self._last_key: tuple[str, str] | None = None
