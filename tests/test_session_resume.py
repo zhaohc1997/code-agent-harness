@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import code_agent_harness.llm as llm
 from code_agent_harness.config import RuntimePaths
 from code_agent_harness.engine.observability import DecisionPointEvent, Observability
 from code_agent_harness.storage.blobs import BlobStore
@@ -115,3 +116,67 @@ def test_logger_rejects_non_serializable_event(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="event must be JSON serializable"):
         logger.append({"bad": {1, 2, 3}})
+
+
+def test_runtime_resumes_persisted_running_session(tmp_path) -> None:
+    from conftest import _build_runtime_dependencies
+    from code_agent_harness.engine.loop import AgentRuntime
+
+    runtime_dependencies = _build_runtime_dependencies(tmp_path)
+    runtime_dependencies["sessions"].save(
+        {
+            "session_id": "s1",
+            "state": SessionState.RUNNING.value,
+            "messages": [
+                {"role": "user", "content": "Read a file"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_call",
+                            "id": "tool-1",
+                            "name": "read_file",
+                            "arguments": {"path": "a.py"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tool-1",
+                            "tool_name": "read_file",
+                            "content": "read:a.py",
+                        }
+                    ],
+                },
+            ],
+            "task_goal": "Read a file",
+            "is_running": True,
+            "queued_interventions": [],
+            "turn_count": 1,
+        }
+    )
+    provider = llm.FakeProvider(
+        script=[
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "finished"}],
+            }
+        ]
+    )
+    runtime = AgentRuntime(provider=provider, **runtime_dependencies)
+
+    result = runtime.run(session_id="s1", user_input="Read a file")
+
+    assert result.state == SessionState.COMPLETED
+    assert [message for message in result.messages if message["role"] == "user" and isinstance(message["content"], str)] == [
+        {"role": "user", "content": "Read a file"}
+    ]
+    checkpoint = runtime_dependencies["checkpoints"].load("s1", 2)
+    assert checkpoint["state"] == SessionState.COMPLETED.value
+    assert checkpoint["messages"][-1] == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "finished"}],
+    }

@@ -6,7 +6,7 @@ from pathlib import Path
 from code_agent_harness.storage.blobs import BlobStore
 
 from code_agent_harness.tools.limits import get_tool_limit
-from code_agent_harness.tools.registry import ToolRegistry
+from code_agent_harness.tools.registry import RegisteredTool, ToolRegistry
 
 
 @dataclass(frozen=True)
@@ -22,8 +22,15 @@ class ToolExecutor:
 
     def execute(self, tool_name: str, arguments: dict[str, object]) -> ToolExecutionResult:
         registered_tool = self._registry.resolve_tool(tool_name)
+        return self.execute_registered(registered_tool, arguments)
+
+    def execute_registered(
+        self,
+        registered_tool: RegisteredTool,
+        arguments: dict[str, object],
+    ) -> ToolExecutionResult:
         output = registered_tool.handler(arguments)
-        return self._apply_limit(tool_name, self._normalize_output(output))
+        return self._apply_limit(registered_tool.definition.name, self._normalize_output(output))
 
     def _apply_limit(self, tool_name: str, content: str) -> ToolExecutionResult:
         limit = get_tool_limit(tool_name)

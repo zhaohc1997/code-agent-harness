@@ -98,6 +98,65 @@ def test_execute_unknown_tool_fails_clearly(tmp_path) -> None:
         executor.execute("missing_tool", {})
 
 
+def test_protocol_uses_stable_tool_snapshot_with_dynamic_loader(tmp_path) -> None:
+    from code_agent_harness.engine.loop import AgentRuntime
+    from conftest import _build_runtime_dependencies
+
+    loads = 0
+
+    def loader():
+        nonlocal loads
+        loads += 1
+        if loads == 1:
+            return [
+                RegisteredTool(
+                    definition=ToolDefinition(name="tool_a"),
+                    handler=lambda arguments: "snapshot-a",
+                )
+            ]
+        return [
+            RegisteredTool(
+                definition=ToolDefinition(name="tool_b"),
+                handler=lambda arguments: "snapshot-b",
+            )
+        ]
+
+    registry = ToolRegistry(loader)
+    runtime_dependencies = _build_runtime_dependencies(tmp_path, registry=registry)
+    provider = FakeProvider(
+        script=[
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "tool_a",
+                        "arguments": {},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "finished"}],
+            },
+        ]
+    )
+    runtime = AgentRuntime(provider=provider, **runtime_dependencies)
+
+    result = runtime.run(session_id="s1", user_input="Use the first tool snapshot")
+
+    assert loads >= 2
+    assert result.messages[2]["content"] == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "tool-1",
+            "tool_name": "tool_a",
+            "content": "snapshot-a",
+        }
+    ]
+
+
 def test_protocol_requires_tool_results_adjacent(runtime_dependencies) -> None:
     from code_agent_harness.engine.loop import AgentRuntime
 
@@ -175,3 +234,31 @@ def test_protocol_rejects_tool_use_without_tool_calls(runtime_dependencies) -> N
     session = runtime_dependencies["sessions"].load("s1")
     assert session["state"] == SessionState.FAILED.value
     assert session["messages"][-1]["role"] == "assistant"
+
+
+def test_protocol_rejects_non_mapping_tool_arguments(runtime_dependencies) -> None:
+    from code_agent_harness.engine.loop import AgentRuntime
+
+    provider = FakeProvider(
+        script=[
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": ["a.py"],
+                    }
+                ],
+            }
+        ]
+    )
+    runtime = AgentRuntime(provider=provider, **runtime_dependencies)
+
+    with pytest.raises(ValueError, match="tool_call arguments must be an object"):
+        runtime.run(session_id="s1", user_input="Read a file")
+
+    session = runtime_dependencies["sessions"].load("s1")
+    assert session["state"] == SessionState.FAILED.value
+    assert runtime_dependencies["checkpoints"].load("s1", 1)["state"] == SessionState.FAILED.value

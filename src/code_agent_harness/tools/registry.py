@@ -14,12 +14,30 @@ class UnknownToolError(LookupError):
     pass
 
 
+class ToolRegistrySnapshot:
+    def __init__(self, tools: Iterable[RegisteredTool]) -> None:
+        self._tools = tuple(tools)
+        self._tools_by_name = {tool.definition.name: tool for tool in self._tools}
+
+    def list_tools(self) -> list[ToolDefinition]:
+        return [registered_tool.definition for registered_tool in self._tools]
+
+    def resolve_tool(self, tool_name: str) -> RegisteredTool:
+        try:
+            return self._tools_by_name[tool_name]
+        except KeyError as exc:
+            raise UnknownToolError(f"unknown tool: {tool_name}") from exc
+
+
 class ToolRegistry:
     def __init__(self, loader: Callable[[], Iterable[RegisteredTool]]) -> None:
         self._loader = loader
 
     def list_tools(self) -> list[ToolDefinition]:
         return [registered_tool.definition for registered_tool in self._loader()]
+
+    def snapshot(self) -> ToolRegistrySnapshot:
+        return ToolRegistrySnapshot(self._loader())
 
     def resolve_tool(self, tool_name: str) -> RegisteredTool:
         for registered_tool in self._loader():

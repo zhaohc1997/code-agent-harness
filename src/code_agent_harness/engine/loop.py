@@ -13,7 +13,7 @@ from code_agent_harness.llm.base import LLMProvider
 from code_agent_harness.storage.checkpoints import CheckpointStore
 from code_agent_harness.storage.sessions import SessionStore
 from code_agent_harness.tools.executor import ToolExecutor
-from code_agent_harness.tools.registry import ToolRegistry
+from code_agent_harness.tools.registry import ToolRegistry, ToolRegistrySnapshot
 from code_agent_harness.types.engine import LLMRequest, RuntimeResult
 from code_agent_harness.types.state import SessionState
 
@@ -33,8 +33,9 @@ class AgentRuntime:
 
     def run(self, session_id: str, user_input: str) -> RuntimeResult:
         session = self._load_or_create_session(session_id=session_id, task_goal=user_input)
-        self._state_machine_transition(SessionState(session["state"]), SessionState.RUNNING)
-        session["messages"].append({"role": "user", "content": user_input})
+        resume_session = self._enter_running_state(SessionState(session["state"]))
+        if not resume_session:
+            session["messages"].append({"role": "user", "content": user_input})
         self._save_session(session)
 
         try:
@@ -45,7 +46,8 @@ class AgentRuntime:
 
                 session["turn_count"] += 1
                 turn_count = session["turn_count"]
-                tools = self.registry.list_tools()
+                tool_snapshot = self.registry.snapshot()
+                tools = tool_snapshot.list_tools()
                 response = self.provider.generate(
                     LLMRequest(
                         system_prompt=self.system_prompt,
@@ -68,15 +70,14 @@ class AgentRuntime:
                     break
 
                 tool_calls = self._extract_tool_calls(response.content)
-                tool_results = self._execute_tool_calls(tool_calls)
+                tool_results = self._execute_tool_calls(tool_calls, tool_snapshot)
                 session["messages"].append({"role": "user", "content": tool_results})
-                self.checkpoints.save(session_id, turn_count, session)
-                self._save_session(session)
+                self._checkpoint_session(session_id, session)
         except Exception:
             self._persist_failed_state(session_id, session)
             raise
 
-        self._save_session(session)
+        self._checkpoint_session(session_id, session)
         return RuntimeResult(
             state=self.state_machine.state,
             output_text=self._extract_output_text(session["messages"]),
@@ -99,14 +100,18 @@ class AgentRuntime:
             self.sessions.save(session)
         return session
 
-    def _execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, object]]:
+    def _execute_tool_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+        tool_snapshot: ToolRegistrySnapshot,
+    ) -> list[dict[str, object]]:
         results: list[dict[str, object]] = []
         for block in tool_calls:
-            tool_name = str(block["name"])
-            arguments = self._coerce_arguments(block.get("arguments"))
+            tool_name = self._require_tool_name(block.get("name"))
+            arguments = self._require_arguments(block.get("arguments"))
             if self.cycle_guard.record(tool_name, arguments):
                 raise RuntimeError(f"cycle detected for tool call: {tool_name}")
-            execution = self.executor.execute(tool_name, arguments)
+            execution = self.executor.execute_registered(tool_snapshot.resolve_tool(tool_name), arguments)
             tool_result = {
                 "type": "tool_result",
                 "tool_use_id": block.get("id"),
@@ -123,13 +128,23 @@ class AgentRuntime:
         session["is_running"] = self.state_machine.state == SessionState.RUNNING
         self.sessions.save(session)
 
-    def _persist_failed_state(self, session_id: str, session: dict[str, Any]) -> None:
-        if self.state_machine.state != SessionState.FAILED:
-            self._state_machine_transition(self.state_machine.state, SessionState.FAILED)
+    def _checkpoint_session(self, session_id: str, session: dict[str, Any]) -> None:
         self._save_session(session)
         turn_count = session.get("turn_count")
         if isinstance(turn_count, int):
             self.checkpoints.save(session_id, turn_count, session)
+
+    def _persist_failed_state(self, session_id: str, session: dict[str, Any]) -> None:
+        if self.state_machine.state != SessionState.FAILED:
+            self._state_machine_transition(self.state_machine.state, SessionState.FAILED)
+        self._checkpoint_session(session_id, session)
+
+    def _enter_running_state(self, current_state: SessionState) -> bool:
+        self.state_machine.state = current_state
+        if current_state == SessionState.RUNNING:
+            return True
+        self.state_machine.transition(SessionState.RUNNING)
+        return False
 
     def _state_machine_transition(self, current_state: SessionState, next_state: SessionState) -> None:
         self.state_machine.state = current_state
@@ -159,7 +174,17 @@ class AgentRuntime:
     def _coerce_arguments(arguments: object) -> dict[str, object]:
         if isinstance(arguments, dict):
             return arguments
-        return {}
+        raise ValueError("tool_call arguments must be an object")
+
+    @staticmethod
+    def _require_arguments(arguments: object) -> dict[str, object]:
+        return AgentRuntime._coerce_arguments(arguments)
+
+    @staticmethod
+    def _require_tool_name(name: object) -> str:
+        if isinstance(name, str) and name:
+            return name
+        raise ValueError("tool_call name must be a non-empty string")
 
     @staticmethod
     def _extract_tool_calls(content: list[object]) -> list[dict[str, Any]]:
