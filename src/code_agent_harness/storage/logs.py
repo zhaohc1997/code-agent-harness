@@ -1,5 +1,10 @@
 import json
 from pathlib import Path
+from typing import TypeAlias
+
+
+JsonPrimitive: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
 
 
 def _require_leaf_name(value: str, label: str) -> str:
@@ -15,7 +20,7 @@ class StructuredLogger:
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / _require_leaf_name(filename, "filename")
 
-    def append(self, event: dict[str, object]) -> None:
+    def append(self, event: dict[str, JsonValue]) -> None:
         try:
             payload = json.dumps(event, sort_keys=True)
         except TypeError as exc:

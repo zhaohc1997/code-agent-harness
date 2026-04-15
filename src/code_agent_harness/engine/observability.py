@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from code_agent_harness.storage.logs import JsonValue
 from code_agent_harness.storage.logs import StructuredLogger
 
 
@@ -11,10 +12,10 @@ class DecisionPointEvent:
     turn_id: int
     component: str
     status: str
-    metadata: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-    def as_dict(self) -> dict[str, object]:
+    def as_dict(self) -> dict[str, JsonValue]:
         return {
             "event_name": self.event_name,
             "timestamp": self.timestamp,
