@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -19,6 +20,11 @@ class ToolExecutor:
         self._registry = registry
         self._blob_store = BlobStore(Path(blob_store_root) / "blobs")
 
+    def execute(self, tool_name: str, arguments: dict[str, object]) -> ToolExecutionResult:
+        registered_tool = self._registry.resolve_tool(tool_name)
+        output = registered_tool.handler(arguments)
+        return self._apply_limit(tool_name, self._normalize_output(output))
+
     def _apply_limit(self, tool_name: str, content: str) -> ToolExecutionResult:
         limit = get_tool_limit(tool_name)
         if len(content) <= limit:
@@ -35,3 +41,11 @@ class ToolExecutor:
         blob_id = f"{tool_name}-{digest}"
         self._blob_store.save(blob_id, content)
         return blob_id
+
+    def _normalize_output(self, output: object) -> str:
+        if isinstance(output, str):
+            return output
+        try:
+            return json.dumps(output, sort_keys=True, ensure_ascii=False)
+        except TypeError:
+            return str(output)

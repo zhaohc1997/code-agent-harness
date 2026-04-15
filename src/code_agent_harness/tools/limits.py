@@ -1,8 +1,11 @@
-TOOL_LIMITS = {
+from types import MappingProxyType
+
+
+TOOL_LIMITS = MappingProxyType({
     "read_file": 20_000,
     "search_text": 10_000,
     "shell": 15_000,
-}
+})
 
 DEFAULT_TOOL_LIMIT = 10_000
 
