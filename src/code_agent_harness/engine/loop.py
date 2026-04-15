@@ -5,7 +5,7 @@ from dataclasses import field
 from typing import Any
 
 from code_agent_harness.engine.cancellation import CancellationToken
-from code_agent_harness.engine.compaction import micro_compact
+from code_agent_harness.engine.compaction import auto_compact
 from code_agent_harness.engine.cycle_guard import CycleGuard
 from code_agent_harness.engine.observability import Observability
 from code_agent_harness.engine.state_machine import EngineStateMachine
@@ -30,32 +30,94 @@ class AgentRuntime:
     state_machine: EngineStateMachine
     observability: Observability | None = None
     cycle_guard: CycleGuard = field(default_factory=CycleGuard)
+    context_window_tokens: int = 12000
+    auto_summary_trigger_ratio: float = 0.65
+    auto_summary_keep_recent: int = 4
 
     def run(self, session_id: str, user_input: str) -> RuntimeResult:
+        self.cancellation.bind(session_id)
+        self.cycle_guard.reset()
         session = self._load_or_create_session(session_id=session_id, task_goal=user_input)
-        resume_session = self._enter_running_state(SessionState(session["state"]))
+        resume_session = self._enter_running_state(session_id, SessionState(session["state"]))
         if not resume_session:
             session["messages"].append({"role": "user", "content": user_input})
         self._save_session(session)
 
         try:
             while True:
-                if self.cancellation.is_cancelled():
-                    self._state_machine_transition(self.state_machine.state, SessionState.CANCELLED)
+                cancelled = self.cancellation.is_cancelled()
+                self._emit(
+                    event_name="cancellation_check",
+                    session_id=session_id,
+                    turn_id=int(session.get("turn_count", 0)),
+                    status="executed",
+                    metadata={"cancelled": cancelled},
+                )
+                if cancelled:
+                    self.cancellation.acknowledge()
+                    self._state_machine_transition(
+                        session_id=session_id,
+                        turn_id=int(session.get("turn_count", 0)),
+                        next_state=SessionState.CANCELLED,
+                    )
                     break
 
                 session["turn_count"] += 1
                 turn_count = session["turn_count"]
                 tool_snapshot = self.registry.snapshot()
                 tools = tool_snapshot.list_tools()
-                response = self.provider.generate(
-                    LLMRequest(
-                        system_prompt=self.system_prompt,
-                        messages=micro_compact(session["messages"]),
-                        tools=tools,
-                        extra={},
-                    )
+                self._emit(
+                    event_name="tool_registry_reload",
+                    session_id=session_id,
+                    turn_id=turn_count,
+                    status="executed",
+                    metadata={"tool_count": len(tools)},
                 )
+                compacted = auto_compact(
+                    session["messages"],
+                    system_prompt=self.system_prompt,
+                    task_goal=str(session.get("task_goal", user_input)),
+                    max_tokens=self.context_window_tokens,
+                    trigger_ratio=self.auto_summary_trigger_ratio,
+                    keep_recent=self.auto_summary_keep_recent,
+                )
+                self._emit(
+                    event_name="context_micro_compaction",
+                    session_id=session_id,
+                    turn_id=turn_count,
+                    status="executed" if compacted.applied_micro_compaction else "skipped",
+                    metadata={
+                        "input_tokens": compacted.input_token_estimate,
+                        "output_tokens": compacted.output_token_estimate,
+                    },
+                )
+                self._emit(
+                    event_name="context_auto_summary",
+                    session_id=session_id,
+                    turn_id=turn_count,
+                    status="executed" if compacted.applied_auto_summary else "skipped",
+                    metadata={
+                        "threshold_tokens": int(self.context_window_tokens * self.auto_summary_trigger_ratio),
+                        "output_tokens": compacted.output_token_estimate,
+                    },
+                )
+                request = LLMRequest(
+                    system_prompt=self.system_prompt,
+                    messages=compacted.messages,
+                    tools=tools,
+                    extra={},
+                )
+                try:
+                    response = self.provider.generate(request)
+                except Exception as exc:
+                    self._emit(
+                        event_name="llm_turn",
+                        session_id=session_id,
+                        turn_id=turn_count,
+                        status="error",
+                        metadata={"error": str(exc)},
+                    )
+                    raise
                 session["messages"].append({"role": "assistant", "content": response.content})
                 self._emit(
                     event_name="llm_turn",
@@ -66,18 +128,27 @@ class AgentRuntime:
                 )
 
                 if response.stop_reason != "tool_use":
-                    self._state_machine_transition(self.state_machine.state, SessionState.COMPLETED)
+                    self._state_machine_transition(
+                        session_id=session_id,
+                        turn_id=turn_count,
+                        next_state=SessionState.COMPLETED,
+                    )
                     break
 
                 tool_calls = self._extract_tool_calls(response.content)
-                tool_results = self._execute_tool_calls(tool_calls, tool_snapshot)
+                tool_results = self._execute_tool_calls(
+                    session_id=session_id,
+                    turn_count=turn_count,
+                    tool_calls=tool_calls,
+                    tool_snapshot=tool_snapshot,
+                )
                 session["messages"].append({"role": "user", "content": tool_results})
-                self._checkpoint_session(session_id, session)
+                self._checkpoint_session(session_id, session, turn_count=turn_count)
         except Exception:
             self._persist_failed_state(session_id, session)
             raise
 
-        self._checkpoint_session(session_id, session)
+        self._checkpoint_session(session_id, session, turn_count=int(session.get("turn_count", 0)))
         return RuntimeResult(
             state=self.state_machine.state,
             output_text=self._extract_output_text(session["messages"]),
@@ -102,6 +173,9 @@ class AgentRuntime:
 
     def _execute_tool_calls(
         self,
+        *,
+        session_id: str,
+        turn_count: int,
         tool_calls: list[dict[str, Any]],
         tool_snapshot: ToolRegistrySnapshot,
     ) -> list[dict[str, object]]:
@@ -110,7 +184,34 @@ class AgentRuntime:
             tool_name = self._require_tool_name(block.get("name"))
             arguments = self._require_arguments(block.get("arguments"))
             if self.cycle_guard.record(tool_name, arguments):
-                raise RuntimeError(f"cycle detected for tool call: {tool_name}")
+                self._emit(
+                    event_name="loop_detection",
+                    session_id=session_id,
+                    turn_id=turn_count,
+                    status="blocked",
+                    metadata={"tool_name": tool_name, "tool_use_id": str(block.get("id"))},
+                )
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.get("id"),
+                        "tool_name": tool_name,
+                        "content": {
+                            "status": "blocked",
+                            "reason": "cycle_detected",
+                            "message": "Repeated tool call was blocked by the cycle guard.",
+                        },
+                        "is_error": True,
+                    }
+                )
+                continue
+            self._emit(
+                event_name="loop_detection",
+                session_id=session_id,
+                turn_id=turn_count,
+                status="executed",
+                metadata={"tool_name": tool_name, "tool_use_id": str(block.get("id"))},
+            )
             execution = self.executor.execute_registered(tool_snapshot.resolve_tool(tool_name), arguments)
             tool_result = {
                 "type": "tool_result",
@@ -128,27 +229,68 @@ class AgentRuntime:
         session["is_running"] = self.state_machine.state == SessionState.RUNNING
         self.sessions.save(session)
 
-    def _checkpoint_session(self, session_id: str, session: dict[str, Any]) -> None:
+    def _checkpoint_session(self, session_id: str, session: dict[str, Any], *, turn_count: int) -> None:
         self._save_session(session)
-        turn_count = session.get("turn_count")
-        if isinstance(turn_count, int):
+        persisted_turn_count = session.get("turn_count")
+        if isinstance(persisted_turn_count, int):
             self.checkpoints.save(session_id, turn_count, session)
+            self._emit(
+                event_name="checkpoint_write",
+                session_id=session_id,
+                turn_id=turn_count,
+                status="executed",
+                metadata={"checkpoint_turn": turn_count},
+            )
+            return
+        self._emit(
+            event_name="checkpoint_write",
+            session_id=session_id,
+            turn_id=turn_count,
+            status="skipped",
+            metadata={"reason": "missing_turn_count"},
+        )
 
     def _persist_failed_state(self, session_id: str, session: dict[str, Any]) -> None:
         if self.state_machine.state != SessionState.FAILED:
-            self._state_machine_transition(self.state_machine.state, SessionState.FAILED)
-        self._checkpoint_session(session_id, session)
+            self._state_machine_transition(
+                session_id=session_id,
+                turn_id=int(session.get("turn_count", 0)),
+                next_state=SessionState.FAILED,
+            )
+        self._checkpoint_session(session_id, session, turn_count=int(session.get("turn_count", 0)))
 
-    def _enter_running_state(self, current_state: SessionState) -> bool:
+    def _enter_running_state(self, session_id: str, current_state: SessionState) -> bool:
         self.state_machine.state = current_state
         if current_state == SessionState.RUNNING:
+            self._emit(
+                event_name="state_transition",
+                session_id=session_id,
+                turn_id=0,
+                status="skipped",
+                metadata={"from": current_state.value, "to": current_state.value, "reason": "resume_running_session"},
+            )
             return True
+        previous_state = self.state_machine.state
         self.state_machine.transition(SessionState.RUNNING)
+        self._emit(
+            event_name="state_transition",
+            session_id=session_id,
+            turn_id=0,
+            status="executed",
+            metadata={"from": previous_state.value, "to": SessionState.RUNNING.value},
+        )
         return False
 
-    def _state_machine_transition(self, current_state: SessionState, next_state: SessionState) -> None:
-        self.state_machine.state = current_state
+    def _state_machine_transition(self, *, session_id: str, turn_id: int, next_state: SessionState) -> None:
+        current_state = self.state_machine.state
         self.state_machine.transition(next_state)
+        self._emit(
+            event_name="state_transition",
+            session_id=session_id,
+            turn_id=turn_id,
+            status="executed",
+            metadata={"from": current_state.value, "to": next_state.value},
+        )
 
     def _emit(
         self,

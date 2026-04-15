@@ -3,7 +3,8 @@ import json
 import pytest
 
 import code_agent_harness.llm as llm
-from code_agent_harness.config import RuntimePaths
+from code_agent_harness.config import RuntimeConfig, RuntimePaths
+from code_agent_harness.engine.cancellation import CancellationToken
 from code_agent_harness.engine.observability import DecisionPointEvent, Observability
 from code_agent_harness.storage.blobs import BlobStore
 from code_agent_harness.storage.checkpoints import CheckpointStore
@@ -19,6 +20,16 @@ def test_runtime_paths_return_leaf_directories(tmp_path) -> None:
     assert paths.checkpoints == tmp_path / ".agenth" / "checkpoints"
     assert paths.blobs == tmp_path / ".agenth" / "blobs"
     assert paths.logs == tmp_path / ".agenth" / "logs"
+    assert paths.cancellations == tmp_path / ".agenth" / "cancellations"
+
+
+def test_runtime_config_centralizes_default_runtime_settings(tmp_path) -> None:
+    config = RuntimeConfig(root=tmp_path / ".agenth")
+
+    assert config.paths.root == tmp_path / ".agenth"
+    assert config.system_prompt == "You are code-agent-harness."
+    assert config.context_window_tokens == 12000
+    assert config.auto_summary_trigger_ratio == 0.65
 
 
 def test_session_store_round_trip(tmp_path) -> None:
@@ -180,3 +191,18 @@ def test_runtime_resumes_persisted_running_session(tmp_path) -> None:
         "role": "assistant",
         "content": [{"type": "text", "text": "finished"}],
     }
+
+
+def test_cancellation_token_persists_and_clears_file_signal(tmp_path) -> None:
+    token = CancellationToken(signal_root=RuntimePaths(tmp_path / ".agenth").cancellations)
+
+    token.bind("s1")
+    token.cancel()
+
+    assert token.is_cancelled() is True
+    assert (tmp_path / ".agenth" / "cancellations" / "s1.cancel").exists()
+
+    token.acknowledge()
+
+    assert token.is_cancelled() is False
+    assert not (tmp_path / ".agenth" / "cancellations" / "s1.cancel").exists()

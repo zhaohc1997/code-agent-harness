@@ -1,4 +1,5 @@
 import io
+import json
 
 import pytest
 
@@ -97,6 +98,7 @@ def test_engine_checkpoints_successful_terminal_turn(runtime_dependencies) -> No
 def test_engine_checkpoints_clean_cancellation(runtime_dependencies) -> None:
     from code_agent_harness.engine.loop import AgentRuntime
 
+    runtime_dependencies["cancellation"].bind("s1")
     runtime_dependencies["cancellation"].cancel()
     provider = llm.FakeProvider(
         script=[
@@ -116,7 +118,7 @@ def test_engine_checkpoints_clean_cancellation(runtime_dependencies) -> None:
     assert checkpoint["messages"] == [{"role": "user", "content": "Stop now"}]
 
 
-def test_engine_fails_fast_on_repeated_tool_use_loop(tmp_path) -> None:
+def test_engine_blocks_repeated_tool_use_loop_with_structured_tool_result(tmp_path) -> None:
     from code_agent_harness.engine.loop import AgentRuntime
     from conftest import _build_runtime_dependencies
 
@@ -156,15 +158,204 @@ def test_engine_fails_fast_on_repeated_tool_use_loop(tmp_path) -> None:
                     }
                 ],
             },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "loop handled"}],
+            },
         ]
     )
     runtime = AgentRuntime(provider=provider, **runtime_dependencies)
 
-    with pytest.raises(RuntimeError, match="cycle detected"):
-        runtime.run(session_id="s1", user_input="Read a file repeatedly")
+    result = runtime.run(session_id="s1", user_input="Read a file repeatedly")
 
-    session = runtime_dependencies["sessions"].load("s1")
-    assert session["state"] == SessionState.FAILED.value
+    assert result.state == SessionState.COMPLETED
+    blocked_results = [
+        message["content"][0]
+        for message in result.messages
+        if message.get("role") == "user"
+        and isinstance(message.get("content"), list)
+        and message["content"]
+        and message["content"][0].get("type") == "tool_result"
+        and message["content"][0].get("is_error") is True
+    ]
+    assert blocked_results == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "tool-3",
+            "tool_name": "read_file",
+            "content": {
+                "status": "blocked",
+                "reason": "cycle_detected",
+                "message": "Repeated tool call was blocked by the cycle guard.",
+            },
+            "is_error": True,
+        }
+    ]
+
+
+def test_engine_auto_summarizes_large_context_before_llm_call(tmp_path) -> None:
+    from conftest import _build_runtime_dependencies
+    from code_agent_harness.engine.loop import AgentRuntime
+
+    class CapturingProvider:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def generate(self, request):
+            self.requests.append(request)
+            return llm.LLMResponse(
+                stop_reason="end_turn",
+                content=[{"type": "text", "text": "done"}],
+            )
+
+    runtime_dependencies = _build_runtime_dependencies(tmp_path)
+    runtime_dependencies["sessions"].save(
+        {
+            "session_id": "s1",
+            "state": SessionState.IDLE.value,
+            "messages": [
+                {"role": "user", "content": "Original request"},
+                {"role": "assistant", "content": "I will inspect the repository."},
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_name": "search_text", "content": "x" * 500}],
+                },
+                {"role": "assistant", "content": "The failure is in deployment."},
+                {"role": "user", "content": "Continue."},
+            ],
+            "task_goal": "Original request",
+            "is_running": False,
+            "queued_interventions": [],
+            "turn_count": 0,
+        }
+    )
+    provider = CapturingProvider()
+    runtime = AgentRuntime(
+        provider=provider,
+        context_window_tokens=40,
+        auto_summary_trigger_ratio=0.65,
+        auto_summary_keep_recent=3,
+        **runtime_dependencies,
+    )
+
+    runtime.run(session_id="s1", user_input="Continue debugging")
+
+    assert len(provider.requests) == 1
+    first_message = provider.requests[0].messages[0]
+    assert first_message["role"] == "user"
+    assert "You are a test agent." in first_message["content"]
+    assert "Original request" in first_message["content"]
+
+
+def test_engine_emits_decision_point_events_for_acceptance_paths(tmp_path) -> None:
+    from conftest import _build_runtime_dependencies
+    from code_agent_harness.engine.loop import AgentRuntime
+
+    runtime_dependencies = _build_runtime_dependencies(tmp_path)
+    provider = llm.FakeProvider(
+        script=[
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": {"path": "a.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "finished"}],
+            },
+        ]
+    )
+    runtime = AgentRuntime(provider=provider, **runtime_dependencies)
+
+    runtime.run(session_id="s1", user_input="Read a file")
+
+    log_path = tmp_path / ".agenth" / "logs" / "events.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    event_names = {event["event_name"] for event in events}
+    statuses = {event["status"] for event in events}
+
+    assert {
+        "cancellation_check",
+        "tool_registry_reload",
+        "context_micro_compaction",
+        "context_auto_summary",
+        "loop_detection",
+        "state_transition",
+        "checkpoint_write",
+        "llm_turn",
+    }.issubset(event_names)
+    assert {"executed", "skipped"}.issubset(statuses)
+
+
+def test_engine_resets_cycle_guard_between_runs(tmp_path) -> None:
+    from conftest import _build_runtime_dependencies
+    from code_agent_harness.engine.loop import AgentRuntime
+
+    runtime_dependencies = _build_runtime_dependencies(tmp_path)
+    provider = llm.FakeProvider(
+        script=[
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": {"path": "a.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-2",
+                        "name": "read_file",
+                        "arguments": {"path": "a.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "first run done"}],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-3",
+                        "name": "read_file",
+                        "arguments": {"path": "a.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "second run done"}],
+            },
+        ]
+    )
+    runtime = AgentRuntime(provider=provider, **runtime_dependencies)
+
+    first_result = runtime.run(session_id="s1", user_input="Read a file")
+    second_result = runtime.run(session_id="s2", user_input="Read a file again")
+
+    assert first_result.state == SessionState.COMPLETED
+    assert second_result.state == SessionState.COMPLETED
+    assert not any(
+        message.get("role") == "user"
+        and isinstance(message.get("content"), list)
+        and any(isinstance(block, dict) and block.get("is_error") is True for block in message["content"])
+        for message in second_result.messages
+    )
 
 
 def test_engine_persists_failed_state_when_provider_raises(tmp_path) -> None:
@@ -252,3 +443,15 @@ def test_cli_main_runs_runtime_and_reports_result() -> None:
     assert stderr.getvalue() == ""
     assert "state=completed" in stdout.getvalue()
     assert "done" in stdout.getvalue()
+
+
+def test_cli_cancel_writes_session_signal_file(monkeypatch, tmp_path) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["cancel", "--session", "s1"], stdout=stdout, stderr=stderr)
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    assert (tmp_path / ".agenth" / "cancellations" / "s1.cancel").exists()

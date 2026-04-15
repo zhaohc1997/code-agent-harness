@@ -11,6 +11,10 @@ class CycleGuard:
         self._last_key: tuple[str, str] | None = None
         self._repeat_count = 0
 
+    def reset(self) -> None:
+        self._last_key = None
+        self._repeat_count = 0
+
     def record(self, tool_name: str, arguments: dict[str, object]) -> bool:
         normalized_arguments = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
         key = (tool_name, normalized_arguments)

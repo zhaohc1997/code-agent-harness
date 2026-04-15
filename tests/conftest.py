@@ -4,8 +4,10 @@ import pytest
 
 from code_agent_harness.config import RuntimePaths
 from code_agent_harness.engine.cancellation import CancellationToken
+from code_agent_harness.engine.observability import Observability
 from code_agent_harness.engine.state_machine import EngineStateMachine
 from code_agent_harness.storage.checkpoints import CheckpointStore
+from code_agent_harness.storage.logs import StructuredLogger
 from code_agent_harness.storage.sessions import SessionStore
 from code_agent_harness.tools.executor import ToolExecutor
 from code_agent_harness.tools.registry import RegisteredTool, ToolRegistry
@@ -29,8 +31,9 @@ def _build_runtime_dependencies(tmp_path, *, registry: ToolRegistry | None = Non
         "checkpoints": CheckpointStore(paths.checkpoints),
         "registry": active_registry,
         "executor": ToolExecutor(registry=active_registry, blob_store_root=tmp_path / ".agenth"),
-        "cancellation": CancellationToken(),
+        "cancellation": CancellationToken(signal_root=paths.cancellations),
         "state_machine": EngineStateMachine(SessionState.IDLE),
+        "observability": Observability(StructuredLogger(paths.logs)),
     }
 
 
