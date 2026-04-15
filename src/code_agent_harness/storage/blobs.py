@@ -3,7 +3,13 @@ from pathlib import Path
 
 def _require_leaf_name(value: str, label: str) -> str:
     candidate = Path(value)
-    if candidate.name != value or candidate.is_absolute() or candidate.parent != Path("."):
+    if (
+        value in {"", ".", ".."}
+        or candidate.is_absolute()
+        or len(candidate.parts) != 1
+        or "/" in value
+        or "\\" in value
+    ):
         raise ValueError(f"{label} must be a simple leaf name, got {value!r}")
     return value
 

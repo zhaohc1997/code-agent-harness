@@ -91,6 +91,25 @@ def test_logger_rejects_traversal_filename(tmp_path) -> None:
         StructuredLogger(RuntimePaths(tmp_path / ".agenth").logs, filename="../escape.jsonl")
 
 
+def test_blob_store_rejects_parent_directory_blob_id(tmp_path) -> None:
+    store = BlobStore(RuntimePaths(tmp_path / ".agenth").blobs)
+
+    with pytest.raises(ValueError, match="blob_id must be a simple leaf name"):
+        store.save("..", "payload text")
+
+
+def test_checkpoint_store_rejects_parent_directory_session_id(tmp_path) -> None:
+    store = CheckpointStore(RuntimePaths(tmp_path / ".agenth").checkpoints)
+
+    with pytest.raises(ValueError, match="session_id must be a simple leaf name"):
+        store.save("..", 1, {"session_id": "s1", "turn_count": 1, "state": SessionState.RUNNING.value})
+
+
+def test_logger_rejects_parent_directory_filename(tmp_path) -> None:
+    with pytest.raises(ValueError, match="filename must be a simple leaf name"):
+        StructuredLogger(RuntimePaths(tmp_path / ".agenth").logs, filename="..")
+
+
 def test_logger_rejects_non_serializable_event(tmp_path) -> None:
     logger = StructuredLogger(RuntimePaths(tmp_path / ".agenth").logs)
 
