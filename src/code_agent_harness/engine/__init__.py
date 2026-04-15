@@ -1,3 +1,3 @@
-from code_agent_harness.engine.state_machine import ALLOWED_TRANSITIONS, EngineStateMachine
+from code_agent_harness.engine.state_machine import EngineStateMachine
 
-__all__ = ["ALLOWED_TRANSITIONS", "EngineStateMachine"]
+__all__ = ["EngineStateMachine"]
