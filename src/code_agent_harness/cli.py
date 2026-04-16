@@ -7,12 +7,19 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, TextIO
 
+from code_agent_harness import llm
 from code_agent_harness.config import RuntimeConfig
 from code_agent_harness.engine.cancellation import CancellationToken
 from code_agent_harness.engine.loop import AgentRuntime
 from code_agent_harness.engine.observability import Observability
 from code_agent_harness.engine.state_machine import EngineStateMachine
+from code_agent_harness.evals.runner import run_eval_task
+from code_agent_harness.evals.tasks import load_default_tasks
+from code_agent_harness.llm.openai_compatible import JsonHttpClient
 from code_agent_harness.llm.openai_compatible import OpenAICompatibleProvider
+from code_agent_harness.policies.code_assistant import build_code_assistant_policy
+from code_agent_harness.profiles.code_assistant import build_code_assistant_profile
+from code_agent_harness.prompts.builders import build_system_prompt
 from code_agent_harness.storage.checkpoints import CheckpointStore
 from code_agent_harness.storage.logs import StructuredLogger
 from code_agent_harness.storage.sessions import SessionStore
@@ -49,13 +56,171 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_default_runtime(profile: str = "code_assistant") -> AgentRuntime:
-    config = RuntimeConfig.from_env(Path.cwd() / ".agenth", Path.cwd(), profile)
+def _load_runtime_config(profile: str) -> RuntimeConfig:
+    return RuntimeConfig.from_env(Path.cwd() / ".agenth", Path.cwd(), profile)
+
+
+def _build_live_provider(config: RuntimeConfig) -> OpenAICompatibleProvider:
+    if config.live_provider is None:
+        raise RuntimeError("Live provider disabled. Set CODE_AGENT_HARNESS_LIVE=1 and DeepSeek env vars.")
+
+    return OpenAICompatibleProvider(
+        client=JsonHttpClient(
+            base_url=config.live_provider.base_url,
+            api_key=config.live_provider.api_key,
+        ),
+        model=config.live_provider.model,
+        base_url=config.live_provider.base_url,
+        api_key=config.live_provider.api_key,
+    )
+
+
+def _build_scripted_eval_provider(task_id: str) -> llm.FakeProvider:
+    scripts: dict[str, list[dict[str, object]]] = {
+        "bugfix-basic": [
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": {"path": "calc.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-2",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "path": "calc.py",
+                            "replacements": [{"old_text": "return a - b", "new_text": "return a + b"}],
+                        },
+                    }
+                ],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-3",
+                        "name": "run_tests",
+                        "arguments": {"args": ["-q", "tests/test_calc.py"]},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "Fixed the bug and the targeted test passed."}],
+            },
+        ],
+        "feature-title-case": [
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": {"path": "text_utils.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-2",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "path": "text_utils.py",
+                            "replacements": [
+                                {
+                                    "old_text": 'return " ".join(words)',
+                                    "new_text": 'return " ".join(word.title() for word in words)',
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-3",
+                        "name": "run_tests",
+                        "arguments": {"args": ["-q", "tests/test_text_utils.py"]},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Implemented title case support and the targeted test passed.",
+                    }
+                ],
+            },
+        ],
+        "analysis-timeout": [
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": {"path": "service.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Default timeout is 45. Enabled features are search, history, and export.",
+                    }
+                ],
+            },
+        ],
+    }
+    if task_id not in scripts:
+        raise ValueError(f"unknown scripted eval task: {task_id}")
+    return llm.FakeProvider(script=scripts[task_id])
+
+
+def build_default_runtime(
+    profile: str = "code_assistant",
+    *,
+    ablations: set[str] | None = None,
+) -> AgentRuntime:
+    config = _load_runtime_config(profile)
     paths = config.paths
-    registry = ToolRegistry(load_builtin_tools)
+    profile_config = build_code_assistant_profile(workspace_root=config.workspace_root, ablations=ablations)
+    registry = ToolRegistry(
+        lambda: [
+            tool
+            for tool in load_builtin_tools(profile_config.workspace_root)
+            if tool.definition.name in profile_config.active_tool_names
+        ]
+    )
+    if config.live_provider is not None and config.live_provider.reasoning_enabled:
+        provider_extra = profile_config.provider_extra
+    else:
+        provider_extra = {}
     return AgentRuntime(
-        provider=OpenAICompatibleProvider(client=object()),
-        system_prompt=config.system_prompt,
+        provider=_build_live_provider(config),
+        system_prompt=build_system_prompt(profile_config.prompt_layers),
         sessions=SessionStore(paths.sessions),
         checkpoints=CheckpointStore(paths.checkpoints),
         registry=registry,
@@ -66,6 +231,12 @@ def build_default_runtime(profile: str = "code_assistant") -> AgentRuntime:
         context_window_tokens=config.context_window_tokens,
         auto_summary_trigger_ratio=config.auto_summary_trigger_ratio,
         auto_summary_keep_recent=config.auto_summary_keep_recent,
+        policy_engine=(
+            None
+            if ablations is not None and "policy_engine" in ablations
+            else build_code_assistant_policy(disabled_tools=set(profile_config.disabled_tools))
+        ),
+        provider_extra=provider_extra,
     )
 
 
@@ -126,10 +297,33 @@ def _cancel_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) ->
 
 
 def _eval_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
-    del stdout
-    del args
-    stderr.write("error: eval is not wired yet in Task 1 scaffolding\n")
-    return 1
+    tasks_by_id = {task.task_id: task for task in load_default_tasks()}
+    if args.task not in tasks_by_id:
+        stderr.write(f"error: unknown task {args.task}\n")
+        return 1
+
+    task = tasks_by_id[args.task]
+    ablations = set(args.ablate)
+    try:
+        provider = (
+            _build_live_provider(_load_runtime_config(args.profile))
+            if args.live
+            else _build_scripted_eval_provider(task.task_id)
+        )
+        result = run_eval_task(
+            task,
+            provider=provider,
+            fixtures_root=Path("tests/evals/fixtures"),
+            tmp_root=Path(".agenth") / "evals",
+            ablations=ablations,
+        )
+    except Exception as exc:
+        stderr.write(f"error: {exc}\n")
+        return 1
+
+    for name, value in result.score.dimensions.items():
+        stdout.write(f"{name}={value}\n")
+    return 0
 
 
 def main(

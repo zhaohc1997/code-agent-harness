@@ -11,6 +11,9 @@ class LiveProviderConfig:
     base_url: str = "https://api.deepseek.com"
     model: str = "DeepSeek-V3.2"
     reasoning_enabled: bool = True
+    context_window_tokens: int = 128_000
+    output_tokens: int = 32_000
+    max_output_tokens: int = 64_000
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,9 @@ class RuntimeConfig:
             profile=profile,
             live=live,
             live_provider=live_provider,
+            context_window_tokens=(
+                live_provider.context_window_tokens if live_provider is not None else cls.context_window_tokens
+            ),
         )
 
     @property

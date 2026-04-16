@@ -82,16 +82,16 @@ def test_run_command_passes_selected_profile_to_runtime_factory() -> None:
     assert "done" in stdout.getvalue()
 
 
-def test_eval_command_returns_nonzero_until_wired() -> None:
+def test_eval_command_returns_nonzero_for_unknown_task() -> None:
     stdout = io.StringIO()
     stderr = io.StringIO()
 
     exit_code = main(
-        ["eval", "--profile", "code_assistant", "--task", "Fix a bug", "--ablate", "memory", "--live"],
+        ["eval", "--profile", "code_assistant", "--task", "missing-task"],
         stdout=stdout,
         stderr=stderr,
     )
 
     assert exit_code != 0
     assert stdout.getvalue() == ""
-    assert "not wired yet" in stderr.getvalue()
+    assert "unknown task" in stderr.getvalue()

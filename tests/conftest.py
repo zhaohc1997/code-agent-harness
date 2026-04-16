@@ -14,6 +14,8 @@ from code_agent_harness.tools.registry import RegisteredTool, ToolRegistry
 from code_agent_harness.types.state import SessionState
 from code_agent_harness.types.tools import ToolDefinition
 
+collect_ignore_glob = ["evals/fixtures/*/tests/test_*.py"]
+
 
 def _build_runtime_dependencies(tmp_path, *, registry: ToolRegistry | None = None):
     paths = RuntimePaths(tmp_path / ".agenth")
