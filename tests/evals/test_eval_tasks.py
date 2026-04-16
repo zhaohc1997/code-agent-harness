@@ -1,5 +1,20 @@
-from code_agent_harness.evals.tasks import EvalTask
-from code_agent_harness.evals.tasks import load_default_tasks
+from code_agent_harness.evals.tasks import (
+    ArgumentExpectation,
+    EvalTask,
+    OutcomeExpectation,
+    ToolExpectation,
+    WorkflowExpectation,
+    load_default_tasks,
+)
+
+
+def test_argument_expectation_rejects_unknown_match_mode() -> None:
+    try:
+        ArgumentExpectation(field_path="path", match_mode="unknown", expected="calc.py")
+    except ValueError as exc:
+        assert "match_mode" in str(exc)
+    else:
+        raise AssertionError("expected match mode validation error")
 
 
 def test_eval_task_requires_known_task_class() -> None:
@@ -9,9 +24,9 @@ def test_eval_task_requires_known_task_class() -> None:
             task_class="other",
             fixture_name="bugfix_repo",
             user_input="fix it",
-            expected_tool_names=("read_file",),
-            required_response_substrings=("fixed",),
-            repo_assertions=(),
+            tool_expectations=(ToolExpectation(name="read_file"),),
+            workflow_expectations=WorkflowExpectation(),
+            outcome_expectations=OutcomeExpectation(),
             live_eligible=False,
         )
     except ValueError as exc:
@@ -20,8 +35,18 @@ def test_eval_task_requires_known_task_class() -> None:
         raise AssertionError("expected validation error")
 
 
-def test_load_default_tasks_covers_bugfix_feature_and_analysis() -> None:
-    tasks = load_default_tasks()
+def test_load_default_tasks_uses_structured_expectations() -> None:
+    tasks = {task.task_id: task for task in load_default_tasks()}
 
-    assert {task.task_class for task in tasks} == {"bugfix", "feature", "analysis"}
-    assert len(tasks) >= 3
+    assert set(tasks) == {"bugfix-basic", "feature-title-case", "analysis-timeout"}
+    bugfix = tasks["bugfix-basic"]
+    analysis = tasks["analysis-timeout"]
+
+    assert bugfix.tool_expectations[0].name == "read_file"
+    assert bugfix.tool_expectations[1].must_appear_after == ("read_file",)
+    assert bugfix.tool_expectations[2].argument_expectations[0].field_path == "args"
+    assert bugfix.workflow_expectations.must_read_before_patch is True
+    assert bugfix.workflow_expectations.must_run_tests_before_finish is True
+    assert bugfix.outcome_expectations.repo_assertions == (("calc.py", "return a + b"),)
+    assert analysis.workflow_expectations.forbid_patch is True
+    assert analysis.outcome_expectations.required_response_substrings == ("45", "search", "history", "export")
