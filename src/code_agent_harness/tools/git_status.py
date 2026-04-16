@@ -21,6 +21,8 @@ def create_git_status_handler(workspace_root: Path | str) -> Callable[[dict[str,
             return completed.stdout
         if completed.stderr.strip():
             return completed.stderr
+        if completed.returncode != 0:
+            return f"git status failed with exit code {completed.returncode}"
         return "clean"
 
     return handler

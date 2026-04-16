@@ -31,11 +31,15 @@ def create_apply_patch_handler(workspace_root: Path | str) -> Callable[[dict[str
                 raise ValueError("replacement.old_text and replacement.new_text are required")
             if not isinstance(replace_all, bool):
                 raise ValueError("replacement.replace_all must be a boolean")
-            if old_text not in content:
+            occurrences = content.count(old_text)
+            if occurrences == 0:
                 raise ValueError(f"old text not found in {raw_path}: {old_text!r}")
-            occurrences = content.count(old_text) if replace_all else 1
+            if not replace_all and occurrences > 1:
+                raise ValueError(
+                    f"ambiguous single replacement in {raw_path}: {occurrences} matches for {old_text!r}"
+                )
             content = content.replace(old_text, new_text, -1 if replace_all else 1)
-            replacement_count += occurrences
+            replacement_count += occurrences if replace_all else 1
 
         path.write_text(content, encoding="utf-8")
         noun = "replacement" if replacement_count == 1 else "replacements"

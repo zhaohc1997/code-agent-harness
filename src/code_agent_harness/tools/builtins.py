@@ -77,7 +77,7 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
         RegisteredTool(
             definition=ToolDefinition(
                 name="apply_patch",
-                description="Apply structured text replacements to a workspace file and fail if expected old text is missing.",
+                description="Apply structured text replacements to a workspace file and fail if expected old text is missing or ambiguous.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -106,7 +106,7 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
         RegisteredTool(
             definition=ToolDefinition(
                 name="run_tests",
-                description="Run pytest from the workspace root using an argument array. Shell command strings are not accepted.",
+                description="Run pytest from the workspace root via the current Python interpreter using an argument array. Shell command strings are not accepted.",
                 input_schema={
                     "type": "object",
                     "properties": {
