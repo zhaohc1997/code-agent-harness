@@ -358,6 +358,88 @@ def test_engine_resets_cycle_guard_between_runs(tmp_path) -> None:
     )
 
 
+def test_engine_blocks_disabled_tool_via_policy(tmp_path) -> None:
+    from conftest import _build_runtime_dependencies
+    from code_agent_harness.engine.loop import AgentRuntime
+    from code_agent_harness.policies.code_assistant import build_code_assistant_policy
+
+    runtime_dependencies = _build_runtime_dependencies(tmp_path)
+    provider = llm.FakeProvider(
+        script=[
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "shell",
+                        "arguments": {"command": "ls"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "blocked"}],
+            },
+        ]
+    )
+    runtime = AgentRuntime(
+        provider=provider,
+        policy_engine=build_code_assistant_policy(disabled_tools={"shell"}),
+        **runtime_dependencies,
+    )
+
+    result = runtime.run(session_id="s1", user_input="list files")
+
+    assert result.state == SessionState.COMPLETED
+    blocked_results = [
+        block
+        for message in result.messages
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if isinstance(block, dict) and block.get("type") == "tool_result"
+    ]
+    assert blocked_results[0]["content"]["reason"] == "disabled_tool"
+    assert blocked_results[0]["is_error"] is True
+
+
+def test_engine_requires_confirmation_for_destructive_patch(tmp_path) -> None:
+    from conftest import _build_runtime_dependencies
+    from code_agent_harness.engine.loop import AgentRuntime
+    from code_agent_harness.policies.code_assistant import build_code_assistant_policy
+
+    runtime_dependencies = _build_runtime_dependencies(tmp_path)
+    provider = llm.FakeProvider(
+        script=[
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "path": "calc.py",
+                            "replacements": [{"old_text": "return a + b", "new_text": ""}],
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    runtime = AgentRuntime(
+        provider=provider,
+        policy_engine=build_code_assistant_policy(disabled_tools={"shell"}),
+        **runtime_dependencies,
+    )
+
+    result = runtime.run(session_id="s1", user_input="delete the function")
+
+    assert result.state == SessionState.AWAITING_CONFIRMATION
+    session = runtime_dependencies["sessions"].load("s1")
+    assert session["queued_interventions"] == [{"tool_call_id": "tool-1", "reason": "destructive_patch"}]
+
+
 def test_engine_persists_failed_state_when_provider_raises(tmp_path) -> None:
     from code_agent_harness.engine.loop import AgentRuntime
     from conftest import _build_runtime_dependencies

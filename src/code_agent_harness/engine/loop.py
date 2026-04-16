@@ -10,6 +10,8 @@ from code_agent_harness.engine.cycle_guard import CycleGuard
 from code_agent_harness.engine.observability import Observability
 from code_agent_harness.engine.state_machine import EngineStateMachine
 from code_agent_harness.llm.base import LLMProvider
+from code_agent_harness.policies.engine import PolicyDecision
+from code_agent_harness.policies.engine import PolicyEngine
 from code_agent_harness.storage.checkpoints import CheckpointStore
 from code_agent_harness.storage.sessions import SessionStore
 from code_agent_harness.tools.executor import ToolExecutor
@@ -33,6 +35,8 @@ class AgentRuntime:
     context_window_tokens: int = 12000
     auto_summary_trigger_ratio: float = 0.65
     auto_summary_keep_recent: int = 4
+    policy_engine: PolicyEngine | None = None
+    provider_extra: dict[str, object] = field(default_factory=dict)
 
     def run(self, session_id: str, user_input: str) -> RuntimeResult:
         self.cancellation.bind(session_id)
@@ -105,7 +109,7 @@ class AgentRuntime:
                     system_prompt=self.system_prompt,
                     messages=compacted.messages,
                     tools=tools,
-                    extra={},
+                    extra=self.provider_extra,
                 )
                 try:
                     response = self.provider.generate(request)
@@ -138,12 +142,15 @@ class AgentRuntime:
                 tool_calls = self._extract_tool_calls(response.content)
                 tool_results = self._execute_tool_calls(
                     session_id=session_id,
+                    session=session,
                     turn_count=turn_count,
                     tool_calls=tool_calls,
                     tool_snapshot=tool_snapshot,
                 )
                 session["messages"].append({"role": "user", "content": tool_results})
                 self._checkpoint_session(session_id, session, turn_count=turn_count)
+                if self.state_machine.state != SessionState.RUNNING:
+                    break
         except Exception:
             self._persist_failed_state(session_id, session)
             raise
@@ -175,6 +182,7 @@ class AgentRuntime:
         self,
         *,
         session_id: str,
+        session: dict[str, Any],
         turn_count: int,
         tool_calls: list[dict[str, Any]],
         tool_snapshot: ToolRegistrySnapshot,
@@ -183,6 +191,33 @@ class AgentRuntime:
         for block in tool_calls:
             tool_name = self._require_tool_name(block.get("name"))
             arguments = self._require_arguments(block.get("arguments"))
+            if self.policy_engine is not None:
+                decision = self.policy_engine.evaluate(tool_name, arguments)
+                policy_status = "blocked" if decision.outcome in {"block", "require_confirmation"} else "executed"
+                self._emit(
+                    event_name="policy_decision",
+                    session_id=session_id,
+                    turn_id=turn_count,
+                    status=policy_status,
+                    metadata={"tool_name": tool_name, "outcome": decision.outcome, "reason": decision.reason},
+                )
+                if decision.outcome == "block":
+                    results.append(self._policy_tool_result(block, tool_name, decision))
+                    continue
+                if decision.outcome == "remind":
+                    results.append(self._policy_tool_result(block, tool_name, decision))
+                    continue
+                if decision.outcome == "require_confirmation":
+                    session["queued_interventions"] = [
+                        {"tool_call_id": str(block.get("id")), "reason": decision.reason}
+                    ]
+                    self._state_machine_transition(
+                        session_id=session_id,
+                        turn_id=turn_count,
+                        next_state=SessionState.AWAITING_CONFIRMATION,
+                    )
+                    results.append(self._policy_tool_result(block, tool_name, decision))
+                    break
             if self.cycle_guard.record(tool_name, arguments):
                 self._emit(
                     event_name="loop_detection",
@@ -223,6 +258,24 @@ class AgentRuntime:
                 tool_result["external_blob_id"] = execution.external_blob_id
             results.append(tool_result)
         return results
+
+    @staticmethod
+    def _policy_tool_result(
+        block: dict[str, Any],
+        tool_name: str,
+        decision: PolicyDecision,
+    ) -> dict[str, object]:
+        return {
+            "type": "tool_result",
+            "tool_use_id": block.get("id"),
+            "tool_name": tool_name,
+            "content": {
+                "status": decision.outcome,
+                "reason": decision.reason,
+                "message": decision.message,
+            },
+            "is_error": decision.outcome in {"block", "require_confirmation"},
+        }
 
     def _save_session(self, session: dict[str, Any]) -> None:
         session["state"] = self.state_machine.state.value
