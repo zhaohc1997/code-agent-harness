@@ -29,6 +29,10 @@ def create_apply_patch_handler(workspace_root: Path | str) -> Callable[[dict[str
             replace_all = replacement.get("replace_all", False)
             if not isinstance(old_text, str) or not isinstance(new_text, str):
                 raise ValueError("replacement.old_text and replacement.new_text are required")
+            if not old_text:
+                raise ValueError("replacement.old_text must be a non-empty string")
+            if not new_text:
+                raise ValueError("replacement.new_text must be a non-empty string")
             if not isinstance(replace_all, bool):
                 raise ValueError("replacement.replace_all must be a boolean")
             occurrences = content.count(old_text)

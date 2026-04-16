@@ -88,8 +88,8 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "old_text": {"type": "string"},
-                                    "new_text": {"type": "string"},
+                                    "old_text": {"type": "string", "minLength": 1},
+                                    "new_text": {"type": "string", "minLength": 1},
                                     "replace_all": {"type": "boolean"},
                                 },
                                 "required": ["old_text", "new_text"],

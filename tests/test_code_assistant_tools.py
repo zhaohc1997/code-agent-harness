@@ -79,6 +79,30 @@ def test_apply_patch_rejects_ambiguous_single_replacement(tmp_path: Path) -> Non
     assert file_path.read_text(encoding="utf-8") == original
 
 
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ({"old_text": "", "new_text": "after"}, "replacement.old_text must be a non-empty string"),
+        ({"old_text": "before", "new_text": ""}, "replacement.new_text must be a non-empty string"),
+    ],
+)
+def test_apply_patch_rejects_empty_replacement_text(
+    tmp_path: Path,
+    replacement: dict[str, str],
+    message: str,
+) -> None:
+    file_path = tmp_path / "app.py"
+    original = "print('before')\n"
+    file_path.write_text(original, encoding="utf-8")
+
+    handler = create_apply_patch_handler(tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        handler({"path": "app.py", "replacements": [replacement]})
+
+    assert file_path.read_text(encoding="utf-8") == original
+
+
 def test_run_tests_uses_argument_arrays(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
 
@@ -123,8 +147,11 @@ def test_git_status_reports_failure_when_git_returns_no_output(
 
 def test_strengthened_tool_schema_lists_required_fields(tmp_path: Path) -> None:
     tools = {tool.definition.name: tool.definition for tool in load_builtin_tools(tmp_path)}
+    replacement_schema = tools["apply_patch"].input_schema["properties"]["replacements"]["items"]["properties"]
 
     assert tools["read_file"].input_schema["required"] == ["path"]
     assert tools["apply_patch"].input_schema["required"] == ["path", "replacements"]
+    assert replacement_schema["old_text"]["minLength"] == 1
+    assert replacement_schema["new_text"]["minLength"] == 1
     assert tools["run_tests"].input_schema["required"] == ["args"]
     assert tools["ask_confirmation"].input_schema["required"] == ["message"]
