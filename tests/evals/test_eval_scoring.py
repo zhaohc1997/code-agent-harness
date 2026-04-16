@@ -105,3 +105,36 @@ def test_score_eval_task_exposes_dimension_evidence(tmp_path: Path) -> None:
     assert score.evidence["tool_choice"] == "missing required tool read_file"
     assert "tests/test_calc.py" in score.evidence["tool_arguments"]
     assert "before patching" in score.evidence["workflow"]
+
+
+def test_score_eval_task_requires_tests_before_finish_even_without_patch(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    task = EvalTask(
+        task_id="bugfix-test-required",
+        task_class="bugfix",
+        fixture_name="bugfix_repo",
+        user_input="Fix it",
+        tool_expectations=(ToolExpectation(name="run_tests", required=False),),
+        workflow_expectations=WorkflowExpectation(
+            must_run_tests_before_finish=True,
+        ),
+        outcome_expectations=OutcomeExpectation(
+            repo_assertions=(),
+            required_test_args_fragments=(),
+            required_response_substrings=(),
+        ),
+        live_eligible=True,
+    )
+    trace = EvalTrace(
+        tool_calls=(),
+        final_output="Fixed the bug.",
+        final_state=SessionState.COMPLETED,
+        workspace_root=tmp_path,
+    )
+
+    score = score_eval_task(task, trace)
+
+    assert score.dimensions["workflow"] == 0.0
+    assert "missing required tests before completion" in score.evidence["workflow"]

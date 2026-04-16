@@ -117,8 +117,10 @@ def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
     if workflow.must_read_before_patch and patch_index is not None:
         if read_index is None or read_index >= patch_index:
             workflow_issues.append("must read files before patching")
-    if workflow.must_run_tests_before_finish and patch_index is not None:
-        if test_index is None or test_index <= patch_index:
+    if workflow.must_run_tests_before_finish:
+        if test_index is None:
+            workflow_issues.append("missing required tests before completion")
+        elif patch_index is not None and test_index <= patch_index:
             workflow_issues.append("must run tests before finishing")
     if workflow.forbid_patch and patch_index is not None:
         workflow_issues.append("patching is forbidden")
