@@ -73,6 +73,15 @@ class EvalTask:
         required_response_substrings: tuple[str, ...] | None = None,
         repo_assertions: tuple[tuple[str, str], ...] | None = None,
     ) -> None:
+        if tool_expectations is not None and expected_tool_names is not None:
+            raise ValueError("tool_expectations and expected_tool_names cannot both be provided")
+        if outcome_expectations is not None and (
+            repo_assertions is not None or required_response_substrings is not None
+        ):
+            raise ValueError(
+                "outcome_expectations cannot be combined with repo_assertions or required_response_substrings"
+            )
+
         if tool_expectations is None:
             if expected_tool_names is None:
                 raise TypeError("tool_expectations or expected_tool_names must be provided")
@@ -84,18 +93,9 @@ class EvalTask:
         if outcome_expectations is None:
             outcome_expectations = OutcomeExpectation(
                 repo_assertions=() if repo_assertions is None else repo_assertions,
-                required_response_substrings=
-                () if required_response_substrings is None else required_response_substrings,
-            )
-        elif repo_assertions is not None or required_response_substrings is not None:
-            outcome_expectations = OutcomeExpectation(
-                repo_assertions=outcome_expectations.repo_assertions
-                if repo_assertions is None
-                else repo_assertions,
-                required_test_args_fragments=outcome_expectations.required_test_args_fragments,
-                required_response_substrings=outcome_expectations.required_response_substrings
-                if required_response_substrings is None
-                else required_response_substrings,
+                required_response_substrings=(
+                    () if required_response_substrings is None else required_response_substrings
+                ),
             )
 
         object.__setattr__(self, "task_id", task_id)

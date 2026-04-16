@@ -35,6 +35,44 @@ def test_eval_task_requires_known_task_class() -> None:
         raise AssertionError("expected validation error")
 
 
+def test_eval_task_rejects_mixed_tool_expectation_inputs() -> None:
+    try:
+        EvalTask(
+            task_id="bad",
+            task_class="bugfix",
+            fixture_name="bugfix_repo",
+            user_input="fix it",
+            tool_expectations=(ToolExpectation(name="read_file"),),
+            workflow_expectations=WorkflowExpectation(),
+            outcome_expectations=OutcomeExpectation(),
+            live_eligible=False,
+            expected_tool_names=("read_file",),
+        )
+    except ValueError as exc:
+        assert "tool_expectations" in str(exc)
+    else:
+        raise AssertionError("expected conflict validation error")
+
+
+def test_eval_task_rejects_mixed_outcome_inputs() -> None:
+    try:
+        EvalTask(
+            task_id="bad",
+            task_class="bugfix",
+            fixture_name="bugfix_repo",
+            user_input="fix it",
+            tool_expectations=(ToolExpectation(name="read_file"),),
+            workflow_expectations=WorkflowExpectation(),
+            outcome_expectations=OutcomeExpectation(),
+            live_eligible=False,
+            repo_assertions=(("calc.py", "return a + b"),),
+        )
+    except ValueError as exc:
+        assert "outcome_expectations" in str(exc)
+    else:
+        raise AssertionError("expected conflict validation error")
+
+
 def test_load_default_tasks_uses_structured_expectations() -> None:
     tasks = {task.task_id: task for task in load_default_tasks()}
 
