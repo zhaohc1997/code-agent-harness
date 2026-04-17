@@ -18,13 +18,26 @@ def _indices(trace: EvalTrace, tool_name: str) -> tuple[int, ...]:
     return tuple(call.index for call in trace.tool_calls if call.tool_name == tool_name)
 
 
+def _successful_calls(trace: EvalTrace, tool_name: str) -> tuple[object, ...]:
+    return tuple(
+        call
+        for call in trace.tool_calls
+        if call.tool_name == tool_name and call.has_result and call.result_status == "ok"
+    )
+
+
+def _successful_indices(trace: EvalTrace, tool_name: str) -> tuple[int, ...]:
+    return tuple(call.index for call in _successful_calls(trace, tool_name))
+
+
 def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
     dimensions: dict[str, float] = {}
     evidence: dict[str, str] = {}
 
     tool_choice_issues: list[str] = []
     for expected in task.tool_expectations:
-        matching_indices = _indices(trace, expected.name)
+        matching_calls = _successful_calls(trace, expected.name)
+        matching_indices = tuple(call.index for call in matching_calls)
         if expected.required and not matching_indices:
             tool_choice_issues.append(f"missing required tool {expected.name}")
             continue
@@ -35,7 +48,7 @@ def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
         for call_index in matching_indices:
             current_issue: str | None = None
             for predecessor in expected.must_appear_after:
-                predecessor_indices = _indices(trace, predecessor)
+                predecessor_indices = _successful_indices(trace, predecessor)
                 if not predecessor_indices:
                     current_issue = f"{expected.name} requires prior tool {predecessor}"
                     break
@@ -46,7 +59,7 @@ def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
                 ordering_issue = ordering_issue or current_issue
                 continue
             for successor in expected.must_appear_before:
-                successor_indices = _indices(trace, successor)
+                successor_indices = _successful_indices(trace, successor)
                 if not successor_indices:
                     current_issue = f"{expected.name} requires later tool {successor}"
                     break
@@ -67,7 +80,7 @@ def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
     for expected in task.tool_expectations:
         if not expected.argument_expectations:
             continue
-        matching_calls = [call for call in trace.tool_calls if call.tool_name == expected.name]
+        matching_calls = list(_successful_calls(trace, expected.name))
         if not matching_calls:
             tool_argument_issues.append(f"missing tool call for {expected.name}")
             continue
@@ -99,8 +112,7 @@ def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
     tests_issues: list[str] = []
     run_test_args = [
         str(argument)
-        for call in trace.tool_calls
-        if call.tool_name == "run_tests"
+        for call in _successful_calls(trace, "run_tests")
         for argument in (
             call.arguments.get("args", [])
             if isinstance(call.arguments.get("args", []), list)
@@ -124,9 +136,9 @@ def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
         evidence["response_content"] = "; ".join(response_issues)
 
     workflow_issues: list[str] = []
-    read_indices = _indices(trace, "read_file")
-    patch_indices = _indices(trace, "apply_patch")
-    test_indices = _indices(trace, "run_tests")
+    read_indices = _successful_indices(trace, "read_file")
+    patch_indices = _successful_indices(trace, "apply_patch")
+    test_indices = _successful_indices(trace, "run_tests")
     workflow = task.workflow_expectations
     if workflow.must_read_before_patch and patch_indices:
         first_patch_index = min(patch_indices)

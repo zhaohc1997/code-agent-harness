@@ -215,3 +215,55 @@ def test_score_eval_task_accepts_later_tool_call_that_satisfies_ordering(
     assert score.dimensions["tool_choice"] == 1.0
     assert score.dimensions["tool_arguments"] == 1.0
     assert score.dimensions["workflow"] == 1.0
+
+
+def test_score_eval_task_does_not_count_blocked_run_tests_as_satisfaction(
+    tmp_path: Path,
+) -> None:
+    task = EvalTask(
+        task_id="bugfix-blocked-tests",
+        task_class="bugfix",
+        fixture_name="bugfix_repo",
+        user_input="Fix it",
+        tool_expectations=(
+            ToolExpectation(
+                name="run_tests",
+                argument_expectations=(
+                    ArgumentExpectation(
+                        field_path="args",
+                        match_mode="contains",
+                        expected="tests/test_calc.py",
+                    ),
+                ),
+            ),
+        ),
+        workflow_expectations=WorkflowExpectation(
+            must_run_tests_before_finish=True,
+        ),
+        outcome_expectations=OutcomeExpectation(
+            required_test_args_fragments=("tests/test_calc.py",),
+        ),
+        live_eligible=True,
+    )
+    trace = EvalTrace(
+        tool_calls=(
+            TraceToolCall(
+                index=0,
+                tool_name="run_tests",
+                arguments={"args": ["-q", "tests/test_calc.py"]},
+                tool_use_id="tool-1",
+                has_result=True,
+                result_status="blocked",
+            ),
+        ),
+        final_output="Tried to run tests.",
+        final_state=SessionState.COMPLETED,
+        workspace_root=tmp_path,
+    )
+
+    score = score_eval_task(task, trace)
+
+    assert score.dimensions["tool_choice"] == 0.0
+    assert score.dimensions["tool_arguments"] == 0.0
+    assert score.dimensions["tests"] == 0.0
+    assert score.dimensions["workflow"] == 0.0
