@@ -14,11 +14,8 @@ class EvalScore:
     evidence: dict[str, str] = field(default_factory=dict)
 
 
-def _first_index(trace: EvalTrace, tool_name: str) -> int | None:
-    for call in trace.tool_calls:
-        if call.tool_name == tool_name:
-            return call.index
-    return None
+def _indices(trace: EvalTrace, tool_name: str) -> tuple[int, ...]:
+    return tuple(call.index for call in trace.tool_calls if call.tool_name == tool_name)
 
 
 def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
@@ -27,24 +24,41 @@ def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
 
     tool_choice_issues: list[str] = []
     for expected in task.tool_expectations:
-        call_index = _first_index(trace, expected.name)
-        if expected.required and call_index is None:
+        matching_indices = _indices(trace, expected.name)
+        if expected.required and not matching_indices:
             tool_choice_issues.append(f"missing required tool {expected.name}")
             continue
-        if call_index is None:
+        if not matching_indices:
             continue
-        for predecessor in expected.must_appear_after:
-            predecessor_index = _first_index(trace, predecessor)
-            if predecessor_index is None:
-                tool_choice_issues.append(f"{expected.name} requires prior tool {predecessor}")
-            elif predecessor_index >= call_index:
-                tool_choice_issues.append(f"{expected.name} must appear after {predecessor}")
-        for successor in expected.must_appear_before:
-            successor_index = _first_index(trace, successor)
-            if successor_index is None:
-                tool_choice_issues.append(f"{expected.name} requires later tool {successor}")
-            elif successor_index <= call_index:
-                tool_choice_issues.append(f"{expected.name} must appear before {successor}")
+        valid_index_found = False
+        ordering_issue: str | None = None
+        for call_index in matching_indices:
+            current_issue: str | None = None
+            for predecessor in expected.must_appear_after:
+                predecessor_indices = _indices(trace, predecessor)
+                if not predecessor_indices:
+                    current_issue = f"{expected.name} requires prior tool {predecessor}"
+                    break
+                if not any(predecessor_index < call_index for predecessor_index in predecessor_indices):
+                    current_issue = f"{expected.name} must appear after {predecessor}"
+                    break
+            if current_issue is not None:
+                ordering_issue = ordering_issue or current_issue
+                continue
+            for successor in expected.must_appear_before:
+                successor_indices = _indices(trace, successor)
+                if not successor_indices:
+                    current_issue = f"{expected.name} requires later tool {successor}"
+                    break
+                if not any(successor_index > call_index for successor_index in successor_indices):
+                    current_issue = f"{expected.name} must appear before {successor}"
+                    break
+            if current_issue is None:
+                valid_index_found = True
+                break
+            ordering_issue = ordering_issue or current_issue
+        if not valid_index_found and ordering_issue is not None:
+            tool_choice_issues.append(ordering_issue)
     dimensions["tool_choice"] = 0.0 if tool_choice_issues else 1.0
     if tool_choice_issues:
         evidence["tool_choice"] = tool_choice_issues[0]
@@ -110,21 +124,24 @@ def score_eval_task(task: EvalTask, trace: EvalTrace) -> EvalScore:
         evidence["response_content"] = "; ".join(response_issues)
 
     workflow_issues: list[str] = []
-    read_index = _first_index(trace, "read_file")
-    patch_index = _first_index(trace, "apply_patch")
-    test_index = _first_index(trace, "run_tests")
+    read_indices = _indices(trace, "read_file")
+    patch_indices = _indices(trace, "apply_patch")
+    test_indices = _indices(trace, "run_tests")
     workflow = task.workflow_expectations
-    if workflow.must_read_before_patch and patch_index is not None:
-        if read_index is None or read_index >= patch_index:
+    if workflow.must_read_before_patch and patch_indices:
+        first_patch_index = min(patch_indices)
+        if not any(read_index < first_patch_index for read_index in read_indices):
             workflow_issues.append("must read files before patching")
     if workflow.must_run_tests_before_finish:
-        if test_index is None:
+        if not test_indices:
             workflow_issues.append("missing required tests before completion")
-        elif patch_index is not None and test_index <= patch_index:
-            workflow_issues.append("must run tests before finishing")
-    if workflow.forbid_patch and patch_index is not None:
+        elif patch_indices:
+            last_patch_index = max(patch_indices)
+            if not any(test_index > last_patch_index for test_index in test_indices):
+                workflow_issues.append("must run tests before finishing")
+    if workflow.forbid_patch and patch_indices:
         workflow_issues.append("patching is forbidden")
-    if workflow.forbid_test_runs and test_index is not None:
+    if workflow.forbid_test_runs and test_indices:
         workflow_issues.append("test runs are forbidden")
     dimensions["workflow"] = 0.0 if workflow_issues else 1.0
     if workflow_issues:

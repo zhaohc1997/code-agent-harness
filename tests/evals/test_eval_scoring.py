@@ -138,3 +138,80 @@ def test_score_eval_task_requires_tests_before_finish_even_without_patch(
 
     assert score.dimensions["workflow"] == 0.0
     assert "missing required tests before completion" in score.evidence["workflow"]
+
+
+def test_score_eval_task_accepts_later_tool_call_that_satisfies_ordering(
+    tmp_path: Path,
+) -> None:
+    task = EvalTask(
+        task_id="bugfix-ordering-retry",
+        task_class="bugfix",
+        fixture_name="bugfix_repo",
+        user_input="Fix it",
+        tool_expectations=(
+            ToolExpectation(name="read_file"),
+            ToolExpectation(name="apply_patch", must_appear_after=("read_file",)),
+            ToolExpectation(
+                name="run_tests",
+                must_appear_after=("apply_patch",),
+                argument_expectations=(
+                    ArgumentExpectation(
+                        field_path="args",
+                        match_mode="contains",
+                        expected="tests/test_calc.py",
+                    ),
+                ),
+            ),
+        ),
+        workflow_expectations=WorkflowExpectation(
+            must_read_before_patch=True,
+            must_run_tests_before_finish=True,
+        ),
+        outcome_expectations=OutcomeExpectation(),
+        live_eligible=True,
+    )
+    trace = EvalTrace(
+        tool_calls=(
+            TraceToolCall(
+                index=0,
+                tool_name="read_file",
+                arguments={"path": "calc.py"},
+                tool_use_id="tool-1",
+                has_result=True,
+                result_status="ok",
+            ),
+            TraceToolCall(
+                index=1,
+                tool_name="run_tests",
+                arguments={"args": ["-q", "tests/test_smoke.py"]},
+                tool_use_id="tool-2",
+                has_result=True,
+                result_status="ok",
+            ),
+            TraceToolCall(
+                index=2,
+                tool_name="apply_patch",
+                arguments={"path": "calc.py"},
+                tool_use_id="tool-3",
+                has_result=True,
+                result_status="ok",
+            ),
+            TraceToolCall(
+                index=3,
+                tool_name="run_tests",
+                arguments={"args": ["-q", "tests/test_calc.py"]},
+                tool_use_id="tool-4",
+                has_result=True,
+                result_status="ok",
+            ),
+        ),
+        final_output="Fixed the bug and reran the targeted test.",
+        final_state=SessionState.COMPLETED,
+        workspace_root=tmp_path,
+    )
+
+    score = score_eval_task(task, trace)
+
+    assert score.dimensions["tool_choice"] == 1.0
+    assert score.dimensions["tool_arguments"] == 1.0
+    assert score.dimensions["workflow"] == 1.0
