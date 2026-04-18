@@ -200,4 +200,72 @@ def load_default_tasks() -> tuple[EvalTask, ...]:
             ),
             live_eligible=True,
         ),
+        EvalTask(
+            task_id="bugfix-targeted-report",
+            task_class="bugfix",
+            fixture_name="bugfix_repo",
+            user_input=(
+                "Fix add(), run the targeted calc test, and explicitly report the test file you ran."
+            ),
+            tool_expectations=(
+                ToolExpectation(
+                    name="read_file",
+                    argument_expectations=(
+                        ArgumentExpectation(field_path="path", match_mode="exact", expected="calc.py"),
+                    ),
+                ),
+                ToolExpectation(
+                    name="apply_patch",
+                    must_appear_after=("read_file",),
+                    argument_expectations=(
+                        ArgumentExpectation(field_path="path", match_mode="exact", expected="calc.py"),
+                    ),
+                ),
+                ToolExpectation(
+                    name="run_tests",
+                    must_appear_after=("apply_patch",),
+                    argument_expectations=(
+                        ArgumentExpectation(
+                            field_path="args",
+                            match_mode="contains",
+                            expected="tests/test_calc.py",
+                        ),
+                    ),
+                ),
+            ),
+            workflow_expectations=WorkflowExpectation(
+                must_read_before_patch=True,
+                must_run_tests_before_finish=True,
+            ),
+            outcome_expectations=OutcomeExpectation(
+                repo_assertions=(("calc.py", "return a + b"),),
+                required_test_args_fragments=("tests/test_calc.py",),
+                required_response_substrings=("fixed", "passed", "tests/test_calc.py"),
+            ),
+            live_eligible=True,
+        ),
+        EvalTask(
+            task_id="analysis-readme-no-write",
+            task_class="analysis",
+            fixture_name="analysis_repo",
+            user_input=(
+                "Summarize the repository purpose from README.md. Do not modify files or run tests."
+            ),
+            tool_expectations=(
+                ToolExpectation(
+                    name="read_file",
+                    argument_expectations=(
+                        ArgumentExpectation(field_path="path", match_mode="exact", expected="README.md"),
+                    ),
+                ),
+            ),
+            workflow_expectations=WorkflowExpectation(
+                forbid_patch=True,
+                forbid_test_runs=True,
+            ),
+            outcome_expectations=OutcomeExpectation(
+                required_response_substrings=("Analysis Repo", "without modifying files"),
+            ),
+            live_eligible=True,
+        ),
     )

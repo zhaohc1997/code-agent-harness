@@ -196,6 +196,75 @@ def _build_scripted_eval_provider(task_id: str) -> llm.FakeProvider:
                 ],
             },
         ],
+        "bugfix-targeted-report": [
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": {"path": "calc.py"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-2",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "path": "calc.py",
+                            "replacements": [{"old_text": "return a - b", "new_text": "return a + b"}],
+                        },
+                    }
+                ],
+            },
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-3",
+                        "name": "run_tests",
+                        "arguments": {"args": ["-q", "tests/test_calc.py"]},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Fixed add() and passed the targeted test tests/test_calc.py.",
+                    }
+                ],
+            },
+        ],
+        "analysis-readme-no-write": [
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-1",
+                        "name": "read_file",
+                        "arguments": {"path": "README.md"},
+                    }
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Analysis Repo answers repository questions without modifying files.",
+                    }
+                ],
+            },
+        ],
     }
     if task_id not in scripts:
         raise ValueError(f"unknown scripted eval task: {task_id}")

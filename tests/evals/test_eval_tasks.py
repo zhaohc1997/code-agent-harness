@@ -76,7 +76,7 @@ def test_eval_task_rejects_mixed_outcome_inputs() -> None:
 def test_load_default_tasks_uses_structured_expectations() -> None:
     tasks = {task.task_id: task for task in load_default_tasks()}
 
-    assert set(tasks) == {"bugfix-basic", "feature-title-case", "analysis-timeout"}
+    assert {"bugfix-basic", "feature-title-case", "analysis-timeout"}.issubset(tasks)
     bugfix = tasks["bugfix-basic"]
     analysis = tasks["analysis-timeout"]
 
@@ -88,3 +88,29 @@ def test_load_default_tasks_uses_structured_expectations() -> None:
     assert bugfix.outcome_expectations.repo_assertions == (("calc.py", "return a + b"),)
     assert analysis.workflow_expectations.forbid_patch is True
     assert analysis.outcome_expectations.required_response_substrings == ("45", "search", "history", "export")
+
+
+def test_load_default_tasks_includes_phase3_boundary_cases() -> None:
+    tasks = {task.task_id: task for task in load_default_tasks()}
+
+    assert len(tasks) >= 5
+    assert {"bugfix-basic", "feature-title-case", "analysis-timeout"}.issubset(tasks)
+    assert "bugfix-targeted-report" in tasks
+    assert "analysis-readme-no-write" in tasks
+
+    task_classes = [task.task_class for task in tasks.values()]
+    assert task_classes.count("bugfix") >= 2
+    assert "feature" in task_classes
+    assert "analysis" in task_classes
+
+    targeted = tasks["bugfix-targeted-report"]
+    assert targeted.outcome_expectations.required_test_args_fragments == ("tests/test_calc.py",)
+    assert "tests/test_calc.py" in targeted.outcome_expectations.required_response_substrings
+
+    readonly = tasks["analysis-readme-no-write"]
+    assert readonly.workflow_expectations.forbid_patch is True
+    assert readonly.workflow_expectations.forbid_test_runs is True
+    assert readonly.outcome_expectations.required_response_substrings == (
+        "Analysis Repo",
+        "without modifying files",
+    )
