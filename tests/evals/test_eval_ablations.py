@@ -59,6 +59,11 @@ def _make_run_result(task_id: str, passed: bool, tmp_path: Path) -> EvalRunResul
                 "workflow": "" if passed else "repository file must be read before patching",
             },
         ),
+        cost_metrics={
+            "tool_call_count": 2.0 if passed else 4.0,
+            "assistant_turn_count": 2.0 if passed else 4.0,
+        },
+        failure_attributions=() if passed else ("workflow_failure",),
     )
 
 
@@ -85,6 +90,8 @@ def test_eval_cli_reports_single_task_evidence(monkeypatch, tmp_path: Path) -> N
     assert "passed=0" in text
     assert "tool_choice=0.0" in text
     assert "evidence_tool_choice=missing required tool read_file" in text
+    assert "cost_tool_call_count=4.0" in text
+    assert "failure_attribution=workflow_failure" in text
     assert stderr.getvalue() == ""
 
 
@@ -112,6 +119,8 @@ def test_eval_cli_reports_suite_comparison(monkeypatch, tmp_path: Path) -> None:
         ablation=ablation_suite.results,
         delta_by_dimension={name: -1.0 for name in baseline_result.score.dimensions},
         changed_tasks=("bugfix-basic",),
+        delta_by_cost={"tool_call_count": 2.0, "assistant_turn_count": 2.0},
+        recommendation="keep",
     )
 
     monkeypatch.setattr(cli, "compare_suite_results", lambda *args, **kwargs: comparison)
@@ -138,5 +147,7 @@ def test_eval_cli_reports_suite_comparison(monkeypatch, tmp_path: Path) -> None:
     assert "baseline_passed=1/1" in text
     assert "ablation_passed=0/1" in text
     assert "delta_tool_arguments=-1.0" in text
+    assert "delta_cost_tool_call_count=2.0" in text
+    assert "recommendation=keep" in text
     assert "changed_tasks=bugfix-basic" in text
     assert stderr.getvalue() == ""

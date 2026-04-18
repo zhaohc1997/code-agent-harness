@@ -375,14 +375,18 @@ def _cancel_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) ->
     return 0
 
 
-def _write_task_result(task_id: str, score: object, stdout: TextIO) -> None:
-    stdout.write(f"task={task_id}\n")
-    stdout.write(f"passed={1 if score.passed else 0}\n")
-    for name, value in score.dimensions.items():
+def _write_task_result(result: object, stdout: TextIO) -> None:
+    stdout.write(f"task={result.task_id}\n")
+    stdout.write(f"passed={1 if result.score.passed else 0}\n")
+    for name, value in result.score.dimensions.items():
         stdout.write(f"{name}={value}\n")
-        evidence = score.evidence.get(name, "")
+        evidence = result.score.evidence.get(name, "")
         if evidence and value != 1.0:
             stdout.write(f"evidence_{name}={evidence}\n")
+    for name, value in result.cost_metrics.items():
+        stdout.write(f"cost_{name}={value}\n")
+    for attribution in result.failure_attributions:
+        stdout.write(f"failure_attribution={attribution}\n")
 
 
 def _write_suite_result(result: object, stdout: TextIO) -> None:
@@ -390,6 +394,8 @@ def _write_suite_result(result: object, stdout: TextIO) -> None:
     stdout.write(f"passed_tasks={result.passed_tasks}/{result.total_tasks}\n")
     for name, value in result.dimension_averages.items():
         stdout.write(f"avg_{name}={value}\n")
+    for name, value in result.cost_averages.items():
+        stdout.write(f"avg_cost_{name}={value}\n")
     for run_result in result.results:
         stdout.write(f"task_status={run_result.task_id}:{1 if run_result.score.passed else 0}\n")
 
@@ -403,6 +409,9 @@ def _write_comparison_result(result: object, stdout: TextIO) -> None:
     stdout.write(f"ablation_passed={ablation_passed}/{len(result.ablation)}\n")
     for name, value in result.delta_by_dimension.items():
         stdout.write(f"delta_{name}={value}\n")
+    for name, value in result.delta_by_cost.items():
+        stdout.write(f"delta_cost_{name}={value}\n")
+    stdout.write(f"recommendation={result.recommendation}\n")
     stdout.write(f"changed_tasks={','.join(result.changed_tasks)}\n")
 
 
@@ -428,7 +437,7 @@ def _eval_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> i
                 tmp_root=Path(".agenth") / "evals",
                 ablations=ablations,
             )
-            _write_task_result(result.task_id, result.score, stdout)
+            _write_task_result(result, stdout)
             return 0
 
         if args.suite != "default":

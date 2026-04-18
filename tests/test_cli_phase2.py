@@ -129,3 +129,47 @@ def test_eval_command_reports_live_config_errors(monkeypatch) -> None:
     assert exit_code == 1
     assert stdout.getvalue() == ""
     assert "DEEPSEEK_API_KEY is required" in stderr.getvalue()
+
+
+def test_eval_suite_output_reports_cost_averages(monkeypatch, tmp_path: Path) -> None:
+    from code_agent_harness import cli
+    from code_agent_harness.evals.runner import EvalRunResult, EvalSuiteResult
+    from code_agent_harness.evals.scoring import EvalScore
+    from code_agent_harness.evals.trace import EvalTrace
+
+    result = EvalRunResult(
+        task_id="analysis-timeout",
+        workspace_root=tmp_path,
+        trace=EvalTrace(
+            tool_calls=(),
+            final_output="",
+            final_state=SessionState.COMPLETED,
+            workspace_root=tmp_path,
+        ),
+        score=EvalScore(passed=True, dimensions={"workflow": 1.0}, evidence={}),
+        cost_metrics={"tool_call_count": 1.0},
+    )
+    suite = EvalSuiteResult(
+        suite_name="default",
+        results=(result,),
+        passed_tasks=1,
+        total_tasks=1,
+        dimension_averages={"workflow": 1.0},
+        cost_averages={"tool_call_count": 1.0},
+    )
+
+    monkeypatch.setattr(cli, "run_eval_suite", lambda *args, **kwargs: suite)
+    monkeypatch.setattr(cli, "_build_scripted_eval_provider", lambda task_id: object())
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["eval", "--profile", "code_assistant", "--suite", "default"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    assert "avg_cost_tool_call_count=1.0" in stdout.getvalue()
+    assert stderr.getvalue() == ""

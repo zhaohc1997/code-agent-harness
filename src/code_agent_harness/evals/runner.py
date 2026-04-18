@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import shutil
 
 from code_agent_harness.engine.cancellation import CancellationToken
 from code_agent_harness.engine.loop import AgentRuntime
 from code_agent_harness.engine.state_machine import EngineStateMachine
+from code_agent_harness.evals.diagnostics import (
+    attribute_failures,
+    average_cost_metrics,
+    compare_cost_metrics,
+    compute_cost_metrics,
+    recommend_mechanism,
+)
 from code_agent_harness.evals.scoring import EvalScore, score_eval_task
 from code_agent_harness.evals.tasks import EvalTask
 from code_agent_harness.evals.trace import EvalTrace, extract_eval_trace
@@ -29,6 +36,8 @@ class EvalRunResult:
     workspace_root: Path
     trace: EvalTrace
     score: EvalScore
+    cost_metrics: dict[str, float] = field(default_factory=dict)
+    failure_attributions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,6 +47,7 @@ class EvalSuiteResult:
     passed_tasks: int
     total_tasks: int
     dimension_averages: dict[str, float]
+    cost_averages: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -48,6 +58,8 @@ class EvalComparisonResult:
     ablation: tuple[EvalRunResult, ...]
     delta_by_dimension: dict[str, float]
     changed_tasks: tuple[str, ...]
+    delta_by_cost: dict[str, float] = field(default_factory=dict)
+    recommendation: str = "neutral"
 
 
 def _pass_fail_outcome(result: EvalRunResult | None) -> bool | None:
@@ -117,11 +129,15 @@ def run_eval_task(
     runtime_result = runtime.run(session_id=task.task_id, user_input=task.user_input)
     trace = extract_eval_trace(runtime_result, workspace_root=workspace_root)
     score = score_eval_task(task, trace)
+    cost_metrics = compute_cost_metrics(trace)
+    failure_attributions = attribute_failures(score)
     return EvalRunResult(
         task_id=task.task_id,
         workspace_root=workspace_root,
         trace=trace,
         score=score,
+        cost_metrics=cost_metrics.values,
+        failure_attributions=failure_attributions,
     )
 
 
@@ -153,12 +169,16 @@ def run_eval_suite(
     dimension_averages = {
         name: total / total_tasks for name, total in sorted(dimension_totals.items())
     } if total_tasks else {}
+    cost_averages = average_cost_metrics(
+        tuple(compute_cost_metrics(result.trace) for result in results)
+    )
     return EvalSuiteResult(
         suite_name=suite_name,
         results=results,
         passed_tasks=passed_tasks,
         total_tasks=total_tasks,
         dimension_averages=dimension_averages,
+        cost_averages=cost_averages,
     )
 
 
@@ -204,6 +224,19 @@ def compare_suite_results(
         for dimension in all_dimensions
         if baseline and ablation
     }
+    baseline_cost_averages = _average_run_costs(baseline)
+    ablation_cost_averages = _average_run_costs(ablation)
+    delta_by_cost = compare_cost_metrics(baseline_cost_averages, ablation_cost_averages)
+    baseline_pass_rate = (
+        sum(1 for result in baseline if result.score.passed) / len(baseline)
+        if baseline
+        else 0.0
+    )
+    ablation_pass_rate = (
+        sum(1 for result in ablation if result.score.passed) / len(ablation)
+        if ablation
+        else 0.0
+    )
 
     return EvalComparisonResult(
         suite_name=suite_name,
@@ -212,4 +245,21 @@ def compare_suite_results(
         ablation=ablation,
         delta_by_dimension=delta_by_dimension,
         changed_tasks=changed_tasks,
+        delta_by_cost=delta_by_cost,
+        recommendation=recommend_mechanism(
+            baseline_pass_rate=baseline_pass_rate,
+            ablation_pass_rate=ablation_pass_rate,
+            dimension_deltas=delta_by_dimension,
+            cost_deltas=delta_by_cost,
+        ),
     )
+
+
+def _average_run_costs(results: tuple[EvalRunResult, ...]) -> dict[str, float]:
+    if not results:
+        return {}
+    names = sorted({name for result in results for name in result.cost_metrics})
+    return {
+        name: sum(result.cost_metrics.get(name, 0.0) for result in results) / len(results)
+        for name in names
+    }
