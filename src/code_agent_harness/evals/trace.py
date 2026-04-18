@@ -23,6 +23,7 @@ class EvalTrace:
     final_output: str
     final_state: SessionState
     workspace_root: Path
+    assistant_turn_count: int = 0
 
 
 def extract_eval_trace(runtime_result: RuntimeResult, *, workspace_root: Path) -> EvalTrace:
@@ -41,9 +42,11 @@ def extract_eval_trace(runtime_result: RuntimeResult, *, workspace_root: Path) -
                 result_blocks[tool_use_id] = block
 
     tool_calls: list[TraceToolCall] = []
+    assistant_turn_count = 0
     for message in runtime_result.messages:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
+        assistant_turn_count += 1
         content = message.get("content")
         if not isinstance(content, list):
             continue
@@ -76,4 +79,5 @@ def extract_eval_trace(runtime_result: RuntimeResult, *, workspace_root: Path) -
         final_output=runtime_result.output_text,
         final_state=runtime_result.state,
         workspace_root=workspace_root,
+        assistant_turn_count=assistant_turn_count,
     )
