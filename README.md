@@ -8,6 +8,8 @@ Current project docs:
 - `docs/superpowers/plans/2026-04-15-agent-runtime-phase-1-implementation.md`
 - `docs/superpowers/specs/2026-04-16-code-assistant-phase-2-design.md`
 - `docs/superpowers/plans/2026-04-16-code-assistant-phase-2-implementation.md`
+- `docs/superpowers/specs/2026-04-16-code-assistant-phase-2-5-design.md`
+- `docs/superpowers/plans/2026-04-16-code-assistant-phase-2-5-implementation.md`
 
 ## Phase 2 Code Assistant
 
@@ -26,4 +28,25 @@ Run an eval task with an ablation:
 
 ```bash
 code-agent-harness eval --profile code_assistant --task bugfix-basic --ablate policy_engine
+```
+
+Run the default eval suite:
+
+```bash
+code-agent-harness eval --profile code_assistant --suite default
+```
+
+Compare the baseline suite against one ablation:
+
+```bash
+code-agent-harness eval --profile code_assistant --suite default --compare-ablation policy_engine
+```
+
+Run a live eval task against the configured provider:
+
+```bash
+export CODE_AGENT_HARNESS_LIVE=1
+export DEEPSEEK_BASE_URL=https://api.deepseek.com
+export DEEPSEEK_MODEL=DeepSeek-V3.2
+code-agent-harness eval --profile code_assistant --task analysis-timeout --live
 ```

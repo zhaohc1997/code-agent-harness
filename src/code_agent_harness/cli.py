@@ -13,8 +13,8 @@ from code_agent_harness.engine.cancellation import CancellationToken
 from code_agent_harness.engine.loop import AgentRuntime
 from code_agent_harness.engine.observability import Observability
 from code_agent_harness.engine.state_machine import EngineStateMachine
-from code_agent_harness.evals.runner import run_eval_task
-from code_agent_harness.evals.tasks import load_default_tasks
+from code_agent_harness.evals.runner import compare_suite_results, run_eval_suite, run_eval_task
+from code_agent_harness.evals.tasks import EvalTask, load_default_tasks
 from code_agent_harness.llm.openai_compatible import JsonHttpClient
 from code_agent_harness.llm.openai_compatible import OpenAICompatibleProvider
 from code_agent_harness.policies.code_assistant import build_code_assistant_policy
@@ -49,8 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     eval_parser = subparsers.add_parser("eval")
     eval_parser.add_argument("--profile", default="code_assistant")
-    eval_parser.add_argument("--task", required=True)
+    target_group = eval_parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument("--task")
+    target_group.add_argument("--suite")
     eval_parser.add_argument("--ablate", action="append", default=[])
+    eval_parser.add_argument("--compare-ablation")
     eval_parser.add_argument("--live", action="store_true")
 
     return parser
@@ -199,6 +202,13 @@ def _build_scripted_eval_provider(task_id: str) -> llm.FakeProvider:
     return llm.FakeProvider(script=scripts[task_id])
 
 
+def _provider_factory(args: argparse.Namespace) -> Callable[[EvalTask], object]:
+    if args.live:
+        config = _load_runtime_config(args.profile)
+        return lambda task: _build_live_provider(config)
+    return lambda task: _build_scripted_eval_provider(task.task_id)
+
+
 def build_default_runtime(
     profile: str = "code_assistant",
     *,
@@ -296,34 +306,106 @@ def _cancel_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) ->
     return 0
 
 
+def _write_task_result(task_id: str, score: object, stdout: TextIO) -> None:
+    stdout.write(f"task={task_id}\n")
+    stdout.write(f"passed={1 if score.passed else 0}\n")
+    for name, value in score.dimensions.items():
+        stdout.write(f"{name}={value}\n")
+        evidence = score.evidence.get(name, "")
+        if evidence and value != 1.0:
+            stdout.write(f"evidence_{name}={evidence}\n")
+
+
+def _write_suite_result(result: object, stdout: TextIO) -> None:
+    stdout.write(f"suite={result.suite_name}\n")
+    stdout.write(f"passed_tasks={result.passed_tasks}/{result.total_tasks}\n")
+    for name, value in result.dimension_averages.items():
+        stdout.write(f"avg_{name}={value}\n")
+    for run_result in result.results:
+        stdout.write(f"task_status={run_result.task_id}:{1 if run_result.score.passed else 0}\n")
+
+
+def _write_comparison_result(result: object, stdout: TextIO) -> None:
+    baseline_passed = sum(1 for run_result in result.baseline if run_result.score.passed)
+    ablation_passed = sum(1 for run_result in result.ablation if run_result.score.passed)
+    stdout.write(f"suite={result.suite_name}\n")
+    stdout.write(f"compare_ablation={result.ablation_name}\n")
+    stdout.write(f"baseline_passed={baseline_passed}/{len(result.baseline)}\n")
+    stdout.write(f"ablation_passed={ablation_passed}/{len(result.ablation)}\n")
+    for name, value in result.delta_by_dimension.items():
+        stdout.write(f"delta_{name}={value}\n")
+    stdout.write(f"changed_tasks={','.join(result.changed_tasks)}\n")
+
+
 def _eval_command(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
     tasks_by_id = {task.task_id: task for task in load_default_tasks()}
-    if args.task not in tasks_by_id:
-        stderr.write(f"error: unknown task {args.task}\n")
+    ablations = set(args.ablate)
+
+    if args.compare_ablation and not args.suite:
+        stderr.write("error: --compare-ablation requires --suite\n")
         return 1
 
-    task = tasks_by_id[args.task]
-    ablations = set(args.ablate)
     try:
-        provider = (
-            _build_live_provider(_load_runtime_config(args.profile))
-            if args.live
-            else _build_scripted_eval_provider(task.task_id)
-        )
-        result = run_eval_task(
-            task,
-            provider=provider,
+        provider_factory = _provider_factory(args)
+        if args.task:
+            if args.task not in tasks_by_id:
+                stderr.write(f"error: unknown task {args.task}\n")
+                return 1
+            task = tasks_by_id[args.task]
+            result = run_eval_task(
+                task,
+                provider=provider_factory(task),
+                fixtures_root=Path("tests/evals/fixtures"),
+                tmp_root=Path(".agenth") / "evals",
+                ablations=ablations,
+            )
+            _write_task_result(result.task_id, result.score, stdout)
+            return 0
+
+        if args.suite != "default":
+            stderr.write(f"error: unknown suite {args.suite}\n")
+            return 1
+
+        tasks = tuple(load_default_tasks())
+        if args.compare_ablation:
+            baseline = run_eval_suite(
+                suite_name="default",
+                tasks=tasks,
+                provider_factory=provider_factory,
+                fixtures_root=Path("tests/evals/fixtures"),
+                tmp_root=Path(".agenth") / "evals",
+                ablations=None,
+            )
+            ablation = run_eval_suite(
+                suite_name="default",
+                tasks=tasks,
+                provider_factory=provider_factory,
+                fixtures_root=Path("tests/evals/fixtures"),
+                tmp_root=Path(".agenth") / "evals",
+                ablations=ablations | {args.compare_ablation},
+            )
+            comparison = compare_suite_results(
+                "default",
+                args.compare_ablation,
+                baseline.results,
+                ablation.results,
+            )
+            _write_comparison_result(comparison, stdout)
+            return 0
+
+        suite_result = run_eval_suite(
+            suite_name="default",
+            tasks=tasks,
+            provider_factory=provider_factory,
             fixtures_root=Path("tests/evals/fixtures"),
             tmp_root=Path(".agenth") / "evals",
             ablations=ablations,
         )
+        _write_suite_result(suite_result, stdout)
+        return 0
     except Exception as exc:
         stderr.write(f"error: {exc}\n")
         return 1
-
-    for name, value in result.score.dimensions.items():
-        stdout.write(f"{name}={value}\n")
-    return 0
 
 
 def main(

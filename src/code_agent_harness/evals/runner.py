@@ -50,6 +50,12 @@ class EvalComparisonResult:
     changed_tasks: tuple[str, ...]
 
 
+def _pass_fail_outcome(result: EvalRunResult | None) -> bool | None:
+    if result is None:
+        return None
+    return result.score.passed
+
+
 def _build_runtime(
     workspace_root: Path,
     runtime_root: Path,
@@ -169,7 +175,8 @@ def compare_suite_results(
     changed_tasks = tuple(
         task_id
         for task_id in task_ids
-        if baseline_by_task.get(task_id) != ablation_by_task.get(task_id)
+        if _pass_fail_outcome(baseline_by_task.get(task_id))
+        != _pass_fail_outcome(ablation_by_task.get(task_id))
     )
 
     all_dimensions = sorted(

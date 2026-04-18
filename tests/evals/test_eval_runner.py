@@ -243,3 +243,149 @@ def test_compare_suite_results_reports_changed_tasks(tmp_path: Path) -> None:
     assert comparison.ablation_name == "policy_engine"
     assert comparison.changed_tasks == ("bugfix-basic",)
     assert comparison.delta_by_dimension["tool_arguments"] == -1.0
+
+
+def test_compare_suite_results_ignores_workspace_path_only_differences(tmp_path: Path) -> None:
+    trace_a = EvalTrace(
+        tool_calls=(
+            TraceToolCall(
+                index=0,
+                tool_name="read_file",
+                arguments={"path": "calc.py"},
+                tool_use_id="tool-1",
+                has_result=True,
+                result_status="ok",
+            ),
+        ),
+        final_output="done",
+        final_state=SessionState.COMPLETED,
+        workspace_root=tmp_path / "baseline",
+    )
+    trace_b = EvalTrace(
+        tool_calls=trace_a.tool_calls,
+        final_output=trace_a.final_output,
+        final_state=trace_a.final_state,
+        workspace_root=tmp_path / "ablation",
+    )
+    baseline = (
+        EvalRunResult(
+            task_id="bugfix-basic",
+            workspace_root=tmp_path / "baseline",
+            trace=trace_a,
+            score=EvalScore(
+                passed=True,
+                dimensions={
+                    "tool_choice": 1.0,
+                    "tool_arguments": 1.0,
+                    "repository_state": 1.0,
+                    "tests": 1.0,
+                    "response_content": 1.0,
+                    "workflow": 1.0,
+                },
+                evidence={name: "" for name in ("tool_choice", "tool_arguments", "repository_state", "tests", "response_content", "workflow")},
+            ),
+        ),
+    )
+    ablation = (
+        EvalRunResult(
+            task_id="bugfix-basic",
+            workspace_root=tmp_path / "ablation",
+            trace=trace_b,
+            score=EvalScore(
+                passed=True,
+                dimensions={
+                    "tool_choice": 1.0,
+                    "tool_arguments": 1.0,
+                    "repository_state": 1.0,
+                    "tests": 1.0,
+                    "response_content": 1.0,
+                    "workflow": 1.0,
+                },
+                evidence={name: "" for name in ("tool_choice", "tool_arguments", "repository_state", "tests", "response_content", "workflow")},
+            ),
+        ),
+    )
+
+    comparison = compare_suite_results("default", "policy_engine", baseline, ablation)
+
+    assert comparison.changed_tasks == ()
+
+
+def test_compare_suite_results_ignores_trace_metadata_when_pass_fail_matches(tmp_path: Path) -> None:
+    baseline = (
+        EvalRunResult(
+            task_id="bugfix-basic",
+            workspace_root=tmp_path / "baseline",
+            trace=EvalTrace(
+                tool_calls=(
+                    TraceToolCall(
+                        index=0,
+                        tool_name="read_file",
+                        arguments={"path": "calc.py"},
+                        tool_use_id="tool-1",
+                        has_result=True,
+                        result_status="ok",
+                    ),
+                ),
+                final_output="baseline output",
+                final_state=SessionState.COMPLETED,
+                workspace_root=tmp_path / "baseline",
+            ),
+            score=EvalScore(
+                passed=True,
+                dimensions={
+                    "tool_choice": 1.0,
+                    "tool_arguments": 1.0,
+                    "repository_state": 1.0,
+                    "tests": 1.0,
+                    "response_content": 1.0,
+                    "workflow": 1.0,
+                },
+                evidence={name: "" for name in ("tool_choice", "tool_arguments", "repository_state", "tests", "response_content", "workflow")},
+            ),
+        ),
+    )
+    ablation = (
+        EvalRunResult(
+            task_id="bugfix-basic",
+            workspace_root=tmp_path / "ablation",
+            trace=EvalTrace(
+                tool_calls=(
+                    TraceToolCall(
+                        index=0,
+                        tool_name="read_file",
+                        arguments={"path": "calc.py"},
+                        tool_use_id="tool-99",
+                        has_result=True,
+                        result_status="ok",
+                    ),
+                ),
+                final_output="ablation output",
+                final_state=SessionState.COMPLETED,
+                workspace_root=tmp_path / "ablation",
+            ),
+            score=EvalScore(
+                passed=True,
+                dimensions={
+                    "tool_choice": 1.0,
+                    "tool_arguments": 1.0,
+                    "repository_state": 1.0,
+                    "tests": 1.0,
+                    "response_content": 0.5,
+                    "workflow": 1.0,
+                },
+                evidence={
+                    "tool_choice": "",
+                    "tool_arguments": "",
+                    "repository_state": "",
+                    "tests": "",
+                    "response_content": "minor wording difference",
+                    "workflow": "",
+                },
+            ),
+        ),
+    )
+
+    comparison = compare_suite_results("default", "policy_engine", baseline, ablation)
+
+    assert comparison.changed_tasks == ()

@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import pytest
+
 from code_agent_harness.cli import build_parser, main
 from code_agent_harness.config import RuntimeConfig
 from code_agent_harness.types.engine import RuntimeResult
@@ -35,7 +37,15 @@ def test_cli_parser_accepts_phase2_profile_and_eval_command() -> None:
     run_args = parser.parse_args(["run", "--session", "s1", "--input", "hello", "--profile", "code_assistant"])
     cancel_args = parser.parse_args(["cancel", "--session", "s1"])
     eval_args = parser.parse_args(
-        ["eval", "--profile", "code_assistant", "--task", "Fix a bug", "--ablate", "tool_calls", "--ablate", "memory", "--live"]
+        [
+            "eval",
+            "--profile",
+            "code_assistant",
+            "--suite",
+            "default",
+            "--compare-ablation",
+            "policy_engine",
+        ]
     )
 
     assert run_args.command == "run"
@@ -43,9 +53,15 @@ def test_cli_parser_accepts_phase2_profile_and_eval_command() -> None:
     assert cancel_args.command == "cancel"
     assert eval_args.command == "eval"
     assert eval_args.profile == "code_assistant"
-    assert eval_args.task == "Fix a bug"
-    assert eval_args.ablate == ["tool_calls", "memory"]
-    assert eval_args.live is True
+    assert eval_args.suite == "default"
+    assert eval_args.compare_ablation == "policy_engine"
+
+
+def test_cli_parser_requires_task_or_suite() -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["eval", "--profile", "code_assistant"])
 
 
 def test_run_command_passes_selected_profile_to_runtime_factory() -> None:
@@ -95,3 +111,21 @@ def test_eval_command_returns_nonzero_for_unknown_task() -> None:
     assert exit_code != 0
     assert stdout.getvalue() == ""
     assert "unknown task" in stderr.getvalue()
+
+
+def test_eval_command_reports_live_config_errors(monkeypatch) -> None:
+    monkeypatch.setenv("CODE_AGENT_HARNESS_LIVE", "1")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    exit_code = main(
+        ["eval", "--profile", "code_assistant", "--task", "bugfix-basic", "--live"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert stdout.getvalue() == ""
+    assert "DEEPSEEK_API_KEY is required" in stderr.getvalue()
