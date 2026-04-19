@@ -50,3 +50,27 @@ export DEEPSEEK_BASE_URL=https://api.deepseek.com
 export DEEPSEEK_MODEL=DeepSeek-V3.2
 code-agent-harness eval --profile code_assistant --task analysis-timeout --live
 ```
+
+## Phase 3 Cost-Directed Code Assistant
+
+Phase 3 keeps the project focused on `code_assistant` and optimizes by cost structure:
+
+1. Expand the eval set first.
+2. Strengthen tool descriptions before changing models.
+3. Add pre-tool policy reminders for rules the model may forget.
+4. Treat reasoning mode as an ablation, not a universal answer.
+5. Put model upgrades last.
+
+Run the default suite with cost diagnostics:
+
+```bash
+code-agent-harness eval --profile code_assistant --suite default
+```
+
+Compare a mechanism ablation:
+
+```bash
+code-agent-harness eval --profile code_assistant --suite default --compare-ablation policy_engine
+```
+
+The reported `cost_*` values are trace-derived proxy metrics, not provider billing data.
