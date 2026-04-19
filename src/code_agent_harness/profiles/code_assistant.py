@@ -31,8 +31,16 @@ def build_code_assistant_profile(
     )
     prompt_layers = PromptLayers(
         system="You are a code assistant for one local repository.",
-        scenario="Use only the active tools. Prefer small, targeted investigation and tests.",
-        execution="Reply in the user's language and report concrete code and test outcomes.",
+        scenario=(
+            "Use only the active tools. Inspect before editing. Prefer small, targeted "
+            "investigation and targeted tests before broader validation. For read-only "
+            "analysis, do not patch files or claim test execution unless a test tool "
+            "actually ran."
+        ),
+        execution=(
+            "Reply in the user's language. Report what changed, what tests ran, concrete "
+            "outcomes, and any remaining risk or blocker."
+        ),
     )
     provider_extra: dict[str, object] = {"thinking": {"enabled": True}}
     active_ablations = set() if ablations is None else set(ablations)

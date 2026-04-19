@@ -29,7 +29,11 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
         RegisteredTool(
             definition=ToolDefinition(
                 name="read_file",
-                description="Read a UTF-8 file rooted in the workspace, optionally limited to an inclusive line range.",
+                description=(
+                    "Read a UTF-8 file before editing. Fields: path: string workspace-relative "
+                    "file path; start_line: integer optional inclusive first line; end_line: "
+                    "integer optional inclusive last line."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -46,7 +50,11 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
         RegisteredTool(
             definition=ToolDefinition(
                 name="search_text",
-                description="Search for an exact text fragment in workspace files and return matching file, line number, and line content.",
+                description=(
+                    "Search workspace files for an exact text fragment, not a regex. Fields: "
+                    "pattern: string exact text fragment; path: string optional "
+                    "workspace-relative file or directory scope."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -62,7 +70,10 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
         RegisteredTool(
             definition=ToolDefinition(
                 name="list_files",
-                description="List files under a workspace-relative directory.",
+                description=(
+                    "List files under a workspace-relative directory. Fields: path: string "
+                    "optional directory; omit path to list the workspace root."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -77,7 +88,12 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
         RegisteredTool(
             definition=ToolDefinition(
                 name="apply_patch",
-                description="Apply structured text replacements to a workspace file and fail if expected old text is missing or ambiguous.",
+                description=(
+                    "Apply structured text replacements. Fields: path: string workspace-relative "
+                    "file path; replacements: array of objects with old_text: string, "
+                    "new_text: string, replace_all: boolean optional. Destructive edits may "
+                    "require confirmation."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -106,7 +122,11 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
         RegisteredTool(
             definition=ToolDefinition(
                 name="run_tests",
-                description="Run pytest from the workspace root via the current Python interpreter using an argument array. Shell command strings are not accepted.",
+                description=(
+                    "Run pytest from the workspace root. Fields: args: array[string] required "
+                    "pytest arguments, prefer targeted tests such as ['-q', "
+                    "'tests/test_file.py']. Shell command strings are invalid."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -137,7 +157,11 @@ def _build_builtin_tools(workspace_root: Path) -> tuple[RegisteredTool, ...]:
         RegisteredTool(
             definition=ToolDefinition(
                 name="ask_confirmation",
-                description="Record that a human confirmation step is required and echo the confirmation prompt.",
+                description=(
+                    "Record a required human confirmation step. Fields: message: string "
+                    "required prompt; default: boolean optional default answer. This does not "
+                    "execute the risky action."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {

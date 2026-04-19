@@ -32,3 +32,12 @@ def test_code_assistant_profile_supports_phase2_ablations(tmp_path: Path) -> Non
     assert profile.disabled_tools == ()
     assert profile.prompt_layers.scenario == ""
     assert profile.provider_extra == {}
+
+
+def test_code_assistant_profile_has_phase3_prompt_contract(tmp_path: Path) -> None:
+    profile = build_code_assistant_profile(workspace_root=tmp_path)
+
+    assert "inspect before editing" in profile.prompt_layers.scenario.lower()
+    assert "targeted tests" in profile.prompt_layers.scenario.lower()
+    assert "what changed" in profile.prompt_layers.execution.lower()
+    assert "what tests ran" in profile.prompt_layers.execution.lower()
